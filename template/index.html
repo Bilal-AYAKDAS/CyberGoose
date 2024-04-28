@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cyber Goose</title>
+    <link rel="icon" href="logo0.jpeg" type="image/x-icon">
+    <!-- Bootstrap CSS -->
+    <link href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link href="static/style.css" rel="stylesheet">
+    <!-- jQuery -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <!-- Bootstrap JS, Popper.js, and jQuery -->
+     <!-- FontAwesome CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" rel="stylesheet">
+
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.4/dist/umd/popper.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+    <!-- Your custom JavaScript -->
+    <script src="static/script.js"></script>
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+  <a class="navbar-brand" href="#">CyberGoose</a>
+  <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
+    <span class="navbar-toggler-icon"></span>
+  </button>
+
+    <div class="collapse navbar-collapse" id="navbarSupportedContent">
+    <ul class="navbar-nav mr-auto">
+        <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                Dosya
+            </a>
+            <div class="dropdown-menu" aria-labelledby="navbarDropdown">
+                <a class="dropdown-item" href="#">Yeni Tarayıcı</a>
+                <a class="dropdown-item" href="#">Bağlantı Aç</a>
+                <a class="dropdown-item" href="#">Yeni İndirme</a>
+                <a class="dropdown-item" href="#">Yeni Klasör</a>
+                <a class="dropdown-item" href="#">Yeni Şifrelenmiş Kasa</a>
+                <a class="dropdown-item" href="#">Yeni Dosya</a>
+                <a class="dropdown-item" href="#">Yeni Sembolik Bağlantı </a>
+                <a class="dropdown-item" href="#">Yeniden Adlandır</a>
+                <a class="dropdown-item" href="#">Kopyala</a>
+                <a class="dropdown-item" href="#">Adresi Aç</a>
+                <a class="dropdown-item" href="#">Dosyaları İste</a>
+                <a class="dropdown-item" href="#">Şununla Düzenle</a>
+                <a class="dropdown-item" href="#">Bilgiler</a>
+                <a class="dropdown-item" href="#">İndir</a>
+                <a class="dropdown-item" href="#">Farklı İndir</a>
+                <a class="dropdown-item" href="#">Şuraya İndir</a>
+                <a class="dropdown-item" href="#">Yükle</a>
+                <a class="dropdown-item" href="#">Eşitle</a>
+                <a class="dropdown-item" href="#">Sil</a>
+                <a class="dropdown-item" href="#">Geri Çevir</a>
+                <a class="dropdown-item" href="#">Geri Yükle</a>
+                <a class="dropdown-item" href="#">Unlock Vault</a>
+                <a class="dropdown-item" href="#">Arşiv Oluştur</a>
+                <a class="dropdown-item" href="#">Arşivi Genişlet</a>
+                <a class="dropdown-item" href="#">Yazdır</a>
+                <a class="dropdown-item" href="#">Çık</a>
+            </div>
+        </li>
+        <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                Düzenle
+            </a>
+            <div class="dropdown-menu" aria-labelledby="navbarDropdown">
+                <a class="dropdown-item" href="#">Kes</a>
+                <a class="dropdown-item" href="#">Kopyala</a>
+                <a class="dropdown-item" href="#">Adresi Kopyala</a>
+                <a class="dropdown-item" href="#">Yapıştır</a>
+                <a class="dropdown-item" href="#">Tümünü Seç</a>
+                <a class="dropdown-item" href="#">Ayarlar</a>
+
+            </div>
+        </li>
+        <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                Yer imi ekle
+            </a>
+            
+        </li>
+        <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                Pencere
+            </a>
+            
+        </li>
+      
+    </ul>
+  </div>
+</nav>
+
+
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+    <div class="collapse navbar-collapse" id="navbarSupportedContent">
+        <ul class="navbar-nav mr-auto">
+            <li class="nav-item dropdown">
+                <button type="button" class="btn btn-dark" onclick="serverConnFunc()">
+                    <span class="d-block">
+                            <i class="fas fa-globe-americas fa-2x"></i>
+                        </span>
+                        <span class="d-block">Bağlantıyı Aç</span>
+                </button>
+               
+            </li>
+            <li class="nav-item dropdown">
+                <div style="padding: 10px;">
+                    <select id="settingsCombo" style="padding: 5px; width: 130px;">
+                        <option value="Hızlı Bağlan">Hızlı Bağlan</option>
+                    </select>
+                </div>
+            </li>
+            <li class="nav-item dropdown">
+                <button type="button" class="btn btn-dark  dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false" >
+                    <span class="d-block">
+                            <i class="fas fa-cog fa-2x"></i>
+                        </span>
+                        <span class="d-block">İşlem</span>
+                    </button>
+                <div class="dropdown-menu" aria-labelledby="navbarDropdown">
+                    <a class="dropdown-item" href="#">Yenile</a>
+                    <a class="dropdown-item" href="#">Yeni klasör</a>
+                    <a class="dropdown-item" href="#">Yeni şifrelenmiş kasa</a>
+                    <a class="dropdown-item" href="#">Yeni dosya</a>
+                    <a class="dropdown-item" href="#">Yeni sembolik bağlantı</a>
+                    <a class="dropdown-item" href="#">Yeniden adlandır</a>
+                    <a class="dropdown-item" href="#">Kopyala</a>
+                    <a class="dropdown-item" href="#">Adresi Kopyala</a>
+                    <a class="dropdown-item" href="#">Adresi Aç</a>
+                    <a class="dropdown-item" href="#">Paylaş</a>
+                    <a class="dropdown-item" href="#">Dosyaları iste Aç</a>
+                    <a class="dropdown-item" href="#">Şununla Düzenle</a>
+                    <a class="dropdown-item" href="#">Bilgiler</a>
+                    <a class="dropdown-item" href="#">İndir</a>
+                    <a class="dropdown-item" href="#">Farklı indir</a>
+                    <a class="dropdown-item" href="#">Şuraya indir</a>
+                    <a class="dropdown-item" href="#">Yükle</a>
+                    <a class="dropdown-item" href="#">Eşitle</a>
+                    <a class="dropdown-item" href="#">Sil</a>
+                    <a class="dropdown-item" href="#">Geri Çevir</a>
+                    <a class="dropdown-item" href="#">Geri Yükle</a>
+                    <a class="dropdown-item" href="#">Unlock Vault</a>
+                    <a class="dropdown-item" href="#">Arşiv Oluştur</a>
+                    <a class="dropdown-item" href="#">Arşiv Genişlet</a>
+                    <a class="dropdown-item" href="#">Yeni Tarayıcı</a>
+                    <a class="dropdown-item" href="#">Yeni Yer İmi</a>
+                </div>
+            </li>
+            <li class="nav-item dropdown">
+                <button type="button" class="btn btn-dark">
+                    <span class="d-block">
+                            <i class="fas fa-info-circle fa-2x"></i> 
+                        </span>
+                        <span class="d-block">Bilgi Al</span>
+                    </button>
+            </li>
+            <li class="nav-item dropdown">
+                <button type="button" class="btn btn-dark" >
+                    <span class="d-block"> 
+                            <i class="fas fa-sync-alt fa-2x"></i>
+                        </span>
+                        <span class="d-block">Yenile</span>
+                    </button>
+            </li>
+            <li class="nav-item dropdown">
+                <button type="button" class="btn btn-dark  dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false" >
+                    <span class="d-block">
+                            <i class="fas fa-pencil-alt"></i> 
+                        </span>
+                        <span class="d-block">Düzenle</span>
+                    </button>
+                <div class="dropdown-menu" aria-labelledby="navbarDropdown">
+                    <a class="dropdown-item" href="#">Kes</a>
+                    <a class="dropdown-item" href="#">Kopyala</a>
+                    <a class="dropdown-item" href="#">Adresi Kopyala</a>
+                    <a class="dropdown-item" href="#">Yapıştır</a>
+                    <a class="dropdown-item" href="#">Tümünü Seç</a>
+                    <a class="dropdown-item" href="#">Ayarlar</a>
+    
+                </div>
+            </li>
+            <li class="nav-item dropdown">
+                    <button type="button" class="btn btn-dark">
+                        <span class="d-block">
+                            <i class="fas fa-upload fa-2x"></i> 
+                        </span>
+                        <span class="d-block">Yükle</span>
+                    </button>
+            </li>
+
+            <li class="nav-item dropdown">
+                <button type="button" class="btn btn-dark">
+                    <span class="d-block">
+                            <i class="fas fa-list fa-2x"></i> 
+                        </span>
+                        <span class="d-block">Aktarımlar</span>
+                </button>
+            </li>
+            <li class="nav-item dropdown">
+                    <button type="button" class="btn btn-dark  dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false" >
+                        <span class="d-block">
+                            <i class="fas fa-arrow-up fa-2x"></i>
+                        </span>
+                        <span class="d-block">Bağlantıyı Kes</span>
+                    </button>                
+                
+                <div class="dropdown-menu" aria-labelledby="navbarDropdown">
+                    <a class="dropdown-item" href="#">Kes</a>
+                    <a class="dropdown-item" href="#">Kopyala</a>
+                    <a class="dropdown-item" href="#">Adresi Kopyala</a>
+                    <a class="dropdown-item" href="#">Yapıştır</a>
+                    <a class="dropdown-item" href="#">Tümünü Seç</a>
+                    <a class="dropdown-item" href="#">Ayarlar</a>
+    
+                </div>
+
+            </li>
+
+            
+        </ul>
+    </div>
+</nav>
+<div id="table_divi">
+    <table id="veri-tablosu">
+        <thead>
+        </thead>
+        <tbody>
+            <!-- Veriler buraya eklenecek -->
+        </tbody>
+    </table>
+</div>
+
+</body>
+</html>
