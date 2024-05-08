@@ -1,0 +1,42 @@
+Ftp
+SFTP
+Azure
+Drive
+
+
+    function getLocalFiles()  {
+            var filepath = $('#filepath').val();
+            var data = JSON.stringify({filepath: filepath});
+
+            $.ajax({
+                type: 'POST',
+                url: '/api/localfiles',
+                contentType: 'application/json',
+                data: data,
+                success: function(response) {
+                    console.log('Başarılı:');
+                    var parsedArray = response;
+                    var tableBody = document.getElementById('files_tables_body');
+                    // Temizleme
+                    tableBody.innerHTML = '';
+
+                    for (var i = 0; i < data.length; i++) {
+                        var newRow = tableBody.insertRow();
+                        var cell1 = newRow.insertCell(0);
+                        var cell2 = newRow.insertCell(1);
+                        var cell3 = newRow.insertCell(2);
+                        var cell4 = newRow.insertCell(3);
+
+                        cell1.innerHTML = i + 1;
+                        cell2.innerHTML = parsedArray[i].FileName;
+                        cell3.innerHTML = parsedArray[i].TimeStamp;
+                        cell4.innerHTML = parsedArray[i].Size;
+                    }
+                },
+                error: function(xhr, status, error) {
+                    console.error('Hata:', error);
+                }
+            });
+        
+    }
+

@@ -32,7 +32,7 @@ $(document).ready(function() {
                 if(isTrue=="True"){
                     console.log("geldim");
                     window.opener.getServersFiles();
-
+                    window.close();
                 }
             },
             error: function(xhr, status, error) {

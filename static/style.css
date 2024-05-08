@@ -87,3 +87,38 @@
     width: 100%;
     height: 100%;
 }
+#filepath{
+  width: 94%;
+  height:40px;
+}
+#serverfilepath{
+  width: 94%;
+  height:40px;
+}
+#btnserverpath{
+  padding-top:none;
+  
+}
+#btnpath{
+  padding-top:none;
+  
+}
+
+.selected-row{
+  background-color: #A9A9A9
+}
+.localpathdiv{
+  padding-top: 5px; 
+}
+.serverpathdiv{
+  padding-top:5px ;
+}
+#dosya_tablosu{
+  width: 50%;
+  height: 300px;
+}
+#comp-table{
+  width: 50%;
+  height: 300px;
+}
+

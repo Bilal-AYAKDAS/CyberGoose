@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cyber Goose</title>
-    <link rel="icon" href="logo0.jpeg" type="image/x-icon">
+    <link rel="icon" href="images/logo0.jpeg" type="image/x-icon">
     <!-- Bootstrap CSS -->
     <link href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
     <!-- My CSS -->
@@ -20,9 +20,6 @@
     <script src="static/script.js"></script>
 </head>
 <body>
-
-    
-
 
 <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
     <div class="collapse navbar-collapse" id="navbarSupportedContent">
@@ -134,7 +131,7 @@
                 </div>
             </li>
             <li class="nav-item dropdown">
-                    <button type="button" class="btn btn-dark">
+                    <button type="button" class="btn btn-dark" onclick="uploadFile()">
                         <span class="d-block">
                             <i class="fas fa-upload fa-2x"></i> 
                         </span>
@@ -174,8 +171,49 @@
         </ul>
     </div>
 </nav>
-<div id="mypc_files" class="my-pc-win sidebar-sticky"></div>
-<div id="dosya_tablosu" class="server-win"></div>
+<div id="comp-table" class="my-pc-win sidebar-sticky">
+    <div class="localpathdiv"><input type ="text" id="filepath">
+        <button onclick="getLocalFiles()" id="btnpath" class="btn btn-success">
+            <span class="d-block"><i class="fas fa-arrow-right"></i></span>
+        </button>
+    </div>
+    <table class="table  table-hover">
+    <thead>
+        <tr>
+            <th>Sıra</th>
+            <th>Dosya Adı</th>
+            <th>Zaman Damgası</th>
+            <th>Boyut</th>
+        </tr>
+    </thead>
+    <tbody id="files_tables_body">
+
+    </tbody>
+    </table>
+</div>
+
+<div id="dosya_tablosu" class="server-win">
+    <div class="serverpathdiv">
+        <input type ="text" id="serverfilepath">
+        <button onclick="getServerFiles()" id="btnserverpath" class="btn btn-success">
+            <span class="d-block">
+                <i class="fas fa-arrow-right"></i>
+            </span>
+        </button>
+    </div>
+    <table class="table table-striped table-hover">
+        <thead>
+            <tr>
+                <th>Sıra</th>
+                <th>Dosya Adı</th>
+                <th>Değişim Zamanı</th>
+                <th>Boyut</th>
+            </tr>
+        </thead>
+        <tbody id="server_tables_body">
+
+        </tbody>
+</div>
 
 </body>
 </html>

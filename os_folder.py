@@ -13,7 +13,6 @@ def list_files(directory):
         file_size =os.path.getsize(item_path)
         dosya_dict = {"Sira":i,"FileName": file, "TimeStamp": str(formatted_time), "Size":str(file_size)+" Byte"}
         dosya_dict_listesi.append(dosya_dict)
-
     return dosya_dict_listesi
         
 def open_folder(now_path,directory):
@@ -39,10 +38,21 @@ def open_folder(now_path,directory):
             print(formatted_time)
             print(file_size)
 
-def close_folder():
-    pass
-def edit_file():
-    pass
+def show_file(file_path):
+    content_of_file = dict()
+    i = 0
+    with open(file_path, 'r') as file:
+        for line in file:
+            print(line.strip())
+            content_of_file[i]=line.strip()
+            i = i + 1
+    return content_of_file
+
+def save_file(file_path, content):
+    with open(file_path, 'w') as file:
+        file.write(content)
+    return True
+
 
 #if __name__ == '__main__':
 #   directory_path = "C:\\Users\\bilalayakdas\\Desktop\\FtpDirectory"

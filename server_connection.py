@@ -12,7 +12,6 @@ class FTPOperations:
         self.ftp.login(self.username, self.password)
 
     def dosyalari_listele(self):
-        dosya_bilgileri = []
         dosya_listesi = []
         self.ftp.dir(dosya_listesi.append)
         j=0
@@ -34,6 +33,24 @@ class FTPOperations:
 
         return dosya_dict_listesi
 
+    def open_folder(self, directory):
+        self.ftp.cwd(directory)
+        contents = self.ftp.nlst()
+
+        dosya_dict_listesi = []
+
+        for filename in contents:
+            # Get file details
+            size = self.ftp.size(filename)
+            timestamp = self.ftp.voidcmd('MDTM ' + filename)[4:]
+            # Create dictionary with file details
+            dosya_dict = {"FileName": filename, "TimeStamp": timestamp, "Size": str(size) + " Byte"}
+            # Add dictionary to the list
+            dosya_dict_listesi.append(dosya_dict)
+
+        return dosya_dict_listesi
+        
+
     def dosya_indir(self, sunucu_dosya_adi, yerel_dosya_adi):
         with open(yerel_dosya_adi, 'wb') as dosya:
             self.ftp.retrbinary('RETR ' + sunucu_dosya_adi, dosya.write)
@@ -50,10 +67,11 @@ class FTPOperations:
     def baglanti_kapat(self):
         self.ftp.quit()
 
-if __name__ == "__main__":
-    pass
-    #f = FTPOperations("ftpupload.net",21,"if0_36404009","0920bilal")
-    #print(f.dosyalari_listele())
+#if __name__ == "__main__":
+    
+ #   f = FTPOperations("ftpupload.net",21,"if0_36404009","0920bilal")
+  #  print(f.dosyalari_listele())
+   # print(f.open_folder("/htdocs"))
     #f.dosya_indir("/htdocs/index2.html","C:/FileServer/index2.html") bunlar tamam
     #f.dosya_yukle("/htdocs/index.html","C:/FileServer/index.html") buda tamam
 

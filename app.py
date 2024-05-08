@@ -4,18 +4,11 @@ from server_connection import FTPOperations
 from db import DbMyFtp
 import os_folder as mycomp
 
-
 app = Flask(__name__)
 CORS(app)  # Tüm kaynaklardan gelen isteklere izin verir
 
-ornek_veri = [
-    {"id": 1, "isim": "Örnek 1", "deger": 10},
-    {"id": 2, "isim": "Örnek 2", "deger": 20},
-    {"id": 3, "isim": "Örnek 3", "deger": 30}
-]
-
 servers_dirs = dict()
-
+serverConn = None
 
 @app.route('/')
 def index():
@@ -25,10 +18,6 @@ def index():
 def serverconnection():
     return open('template/serverconnection.html', encoding='utf-8').read()
 
-
-@app.route('/api/veri', methods=['GET'])
-def veri_getir():
-    return jsonify(ornek_veri)
 
 @app.route('/submit', methods=['POST'])
 def submit():
@@ -54,16 +43,13 @@ def submit():
 
 @app.route('/api/dirlist', methods=['GET'])
 def getServerDirList():
-    print("GELDİM")
-    print(servers_dirs)
     return jsonify(servers_dirs)
 
 @app.route('/api/compdirs', methods=['GET'])
 def getCompDirList():
     mycompDirlists = mycomp.list_files("C:\\Users\\bilalayakdas\\Desktop\\FtpDirectory")
-    print("GELDİM")
-    print(mycompDirlists)
     return jsonify(mycompDirlists)
+
 
 def getDirs(serverConn):
     global servers_dirs
@@ -76,13 +62,41 @@ def connectionserver(server, port, username, password):
     print("Username:", username)
     print("Password:",password)
     try:
+        global serverConn
         serverConn = FTPOperations(server, int(port), username, password)
     except Exception as e:
         print(e)
         return False
     getDirs(serverConn)
     return True
+
+@app.route('/api/localfiles', methods=['POST'])
+def localfiles():
+    if request.method == 'POST':
+        if request.headers['Content-Type'] == 'application/json':
+            data = request.json
+            filepath = data.get('filepath')
+            mycompDirlists = mycomp.list_files(str(filepath))
+            print("GELDİM 4")
+            print(mycompDirlists)
+    return jsonify(mycompDirlists)
     
-    
+@app.route('/api/uploadFile', methods=['POST'])
+def uploadFile():
+    if request.method == 'POST':
+        # Gelen isteğin JSON içeriğini kontrol edelim
+        if request.headers['Content-Type'] == 'application/json':
+            # JSON içeriğini alalım
+            data = request.json
+            serverpath = "/htdocs/"
+            folderPath = data.get('folderPath')
+            fileName = data.get('fileName')
+            print(folderPath)
+            print(fileName)
+            global serverConn
+            serverConn.dosya_yukle(serverpath+fileName,folderPath+"\\"+fileName)
+            getDirs(serverConn)
+    return jsonify("mycompDirlists")
+
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=5502,debug=True)
