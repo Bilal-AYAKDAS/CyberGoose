@@ -53,6 +53,9 @@ def save_file(file_path, content):
         file.write(content)
     return True
 
+def delete_file(file_path):
+    os.remove(file_path)
+    return True
 
 #if __name__ == '__main__':
 #   directory_path = "C:\\Users\\bilalayakdas\\Desktop\\FtpDirectory"

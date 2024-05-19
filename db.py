@@ -1,25 +1,49 @@
 import sqlite3
-
+import json
 class DbMyFtp:
 
     def __init__(self):
         pass
         
-    def selectBookMarks(self):        
+    def selectBookMarks(self):
         connection = sqlite3.connect("data.db")
-        cursor = connection.execute("""SELECT ID,
-                                              HOSTNAME,
-                                              PORT,
-                                              USERNAME,
-                                              PASSWORD 
-                                              FROM BOOKMARKS""")
-                
-        for row in cursor:
-            print("ID = "+str(row[0]))
-            print("HOSTNAME = "+row[1])
-            print("*********")
-        
+        cursor = connection.cursor()
+        cursor.execute("""SELECT CONNECTION_TYPE, ID, HOSTNAME, PORT, USERNAME, PASSWORD 
+                        FROM BOOKMARKS 
+                        WHERE ID = (SELECT MAX(ID) FROM BOOKMARKS)""")
+        row = cursor.fetchone()  # Tek bir kayıt almak için fetchone() kullanılır.
         connection.close()
+        
+        if row:
+            data = {
+                "CONNECTION_TYPE": row[0],
+                "ID": row[1],
+                "HOSTNAME": row[2],
+                "PORT": row[3],
+                "USERNAME": row[4],
+                "PASSWORD": row[5]
+            }
+            return data
+        else:
+            return None  # Eğer sonuç yoksa, None döndür.
+
+    def selectLocalBookMarks(self):
+        connection = sqlite3.connect("data.db")
+        cursor = connection.cursor()
+        cursor.execute("""SELECT PATH FROM local_bookmarks 
+                          WHERE ID = (SELECT MAX(ID) FROM local_bookmarks)""")
+        row = cursor.fetchone()  # Tek bir kayıt almak için fetchone() kullanılır.
+        connection.close()
+        if row:
+            
+            data = {
+                "PATH": row[0]
+            }
+            return data
+        else:
+            return None  # Eğer sonuç yoksa, None döndür.
+        
+        
 
     def insertBookMarks(self,hostname,port,username,password):
         connection = sqlite3.connect("data.db")
@@ -49,10 +73,10 @@ class DbMyFtp:
 
     
         
-#db = DbMyFtp()        
-#if __name__ == '__main__':
+db = DbMyFtp()        
+if __name__ == '__main__':
     #db.deleteBookMarks()
     #db.insertBookMarks("hkljnjk","21","kbnljnlk","passs")
  #   db.updateBookMarks(id=4,new_hostname="bbbb",new_port="21",new_username="bb",new_password="bbbb")
-  #  db.selectBookMarks()
+   print(db.selectLocalBookMarks())
 
