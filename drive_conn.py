@@ -30,38 +30,81 @@ class DriveService:
                 token.write(creds.to_json())
         return build('drive', 'v3', credentials=creds)
 
-    def list_files(self, folder):
-        dosya_dict_listesi = []
-        if folder == "/":
-            query = "'root' in parents and trashed=false"
-        else:
-            query = f"'{folder}' in parents and trashed=false"
-        results = self.service.files().list(q=query, pageSize=100).execute()
+    def get_folder_id(self, folder_name_or_path):
+        folder_id = 'root'  # Default to root
+        if folder_name_or_path not in ['/', '\\', '']:
+            folder_id = self.search_folder_id(folder_name_or_path)
+        return folder_id
+
+    def search_folder_id(self, folder_name_or_path):
+        query = f"name = '{folder_name_or_path}' and mimeType = 'application/vnd.google-apps.folder' and trashed=false"
+        results = self.service.files().list(q=query, fields="files(id, name)").execute()
         items = results.get('files', [])
+        if items:
+            return items[0]['id']
+        else:
+            print(f"Folder '{folder_name_or_path}' not found.")
+            return None
+    def get_file_id(self, file_name_or_path):
+        file_id = self.search_file_id(file_name_or_path)
+        return file_id
+
+    def search_file_id(self, file_name_or_path):
+        query = f"name = '{file_name_or_path}' and mimeType != 'application/vnd.google-apps.folder' and trashed=false"
+        results = self.service.files().list(q=query, fields="files(id, name)").execute()
+        items = results.get('files', [])
+        if items:
+            return items[0]['id']
+        else:
+            print(f"File '{file_name_or_path}' not found.")
+            return None
+    def open_folder(self, folder_name_or_path):
+        folder_name_or_path = folder_name_or_path.replace('/', '')
+        folder_id = self.get_folder_id(folder_name_or_path)
+        if folder_id is None:
+            return []
+
+        query = f"'{folder_id}' in parents and trashed=false"
+        results = self.service.files().list(q=query, pageSize=100, fields="files(id, name, size, modifiedTime)").execute()
+        items = results.get('files', [])
+        dosya_dict_listesi = []
+
         if not items:
             print('No files found.')
         else:
             print('Files:')
-            j = 0
-            for item in items:
-                j = j + 1
-                # Dosya adı, ID ve boyutunu alalım
-                filename = item['name']
-                id = item['id']
-                size = ""
-                # Yeni bir sözlük oluşturarak dosya adı, ID ve boyutunu ekleyelim
-                dosya_dict = {"Sira":j,"FileName": filename, "TimeStamp": id, "Size":str(size)+" Byte"}
-                # Oluşturulan sözlüğü dosya_dict_listesi'ne ekleyelim
+            for idx, item in enumerate(items, start=1):
+                filename = item.get('name')
+                file_id = item.get('id')
+                size = item.get('size', '0')
+                modified_time = item.get('modifiedTime', 'N/A')
+                dosya_dict = {
+                    "Sira": idx,
+                    "FileName": filename,
+                    "TimeStamp": modified_time,
+                    "Size": f"{size} Byte"
+                }
                 dosya_dict_listesi.append(dosya_dict)
+        
         return dosya_dict_listesi
 
-    def upload_file(self, file_path, mime_type='application/octet-stream'):
-        file_metadata = {'name': os.path.basename(file_path)}
+    def dosya_yukle(self,server_path, file_path):
+        mime_type='application/octet-stream'
+        server_path =server_path.split("/")[1]
+        print("mainn",server_path)
+        folder_id = self.get_folder_id(server_path)
+        file_metadata = {
+        'name': os.path.basename(file_path),
+        'parents': [folder_id]
+        }
         media = MediaFileUpload(file_path, mimetype=mime_type)
         file = self.service.files().create(body=file_metadata, media_body=media, fields='id').execute()
         print(f"Uploaded file with ID {file.get('id')}")
 
-    def download_file(self, file_id, output_file):
+    def dosya_indir(self, file_path, output_file):
+        file_name = file_path.split('/')[-1]
+        file_name = file_name.replace("/", "")
+        file_id = self.get_file_id(file_name)
         request = self.service.files().get_media(fileId=file_id)
         with open(output_file, 'wb') as fh:
             downloader = MediaIoBaseDownload(fh, request)
@@ -70,13 +113,16 @@ class DriveService:
                 status, done = downloader.next_chunk()
         print(f"Downloaded file to {output_file}")
 
-    def delete_file(self, file_id):
+    def dosya_sil(self, file_path):
+        file_name = file_path.split('/')[-1]
+        file_name = file_name.replace("/", "")
+        file_id = self.get_file_id(file_name)
         self.service.files().delete(fileId=file_id).execute()
         print(f"Deleted file with ID {file_id}")
 
-drive_service = DriveService()
-if __name__ == '__main__':
-    print(drive_service.list_files("/"))
+#drive_service = DriveService()
+#if __name__ == '__main__':
+ #  print(drive_service.list_files("/"))
     
     #drive_service.upload_file("test.txt")
 #drive bağlantısı var denendi

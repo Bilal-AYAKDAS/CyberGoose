@@ -19,10 +19,10 @@
     float: left;
     width:30%;
     border-style:solid;
-    border: 1px solid #33CEFF;
+    border: 1px solid #acb1b2;
     border-top: none;
     border-left: none;
-    height: 350px; /* Örnek yükseklik */
+    height: 450px; /* Örnek yükseklik */
     overflow-y: auto; /* Dikey kaydırma için otomatik (ihtiyaç duyulduğunda) */
     overflow-x: hidden; /* Yatay kaydırma için gizli */
 }
@@ -30,11 +30,11 @@
     float: left;
     width:70%;
     border-style:solid;
-    border: 1px solid #33CEFF;
+    border: 1px solid #acb1b2;
     border-left: none;
     border-right: none;
     border-top: none;
-    height: 350px;
+    height: 450px;
     overflow-y: auto; /* Dikey kaydırma için otomatik (ihtiyaç duyulduğunda) */
     overflow-x: hidden; 
 }
@@ -115,10 +115,9 @@
 }
 #dosya_tablosu{
   width: 50%;
-  height: 300px;
+  height: 600px;
 }
 #comp-table{
   width: 50%;
-  height: 300px;
+  height: 600px;
 }
-

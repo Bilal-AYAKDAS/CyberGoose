@@ -1,6 +1,14 @@
 
 $(document).ready(function() {
-    fetchBookmarkData();
+    
+        $('#conn_type').change(function(){
+            if ($(this).val() === 'DropBox' || $(this).val() === 'GoogleDrive'){
+                $('#server, #port, #username, #passwd, #sshkey').val('').prop('disabled', true);
+            } else {
+                $('#server, #port, #username, #passwd, #sshkey').prop('disabled', false);
+                fetchBookmarkData();
+            }
+        });
 
     $('#submitBtn').click(function() {
         var conn_type = $('#conn_type').val();
@@ -9,19 +17,41 @@ $(document).ready(function() {
         var port = $('#port').val();
         var passwd = $('#passwd').val();
         var sshkey = $('#sshkey').val();
-        if (!username || !server|| !port || !passwd) {
-            if(!sshkey){
-                alert('Hata: Eksik alanlar var');
-                return; 
-            }else{
-                //sshkey ile bağlan
-            }
-            
-        }
-        if(conn_type =="GoogleDrive"){
+
+        if(conn_type =="DropBox" || conn_type =="GoogleDrive"){
+            var data = JSON.stringify({conn_type: conn_type,
+                username: username,
+                server: server,
+                port: port,
+                passwd: passwd,
+                sshkey: sshkey});
+            $.ajax({
+                type: 'POST',
+                url: '/submit',
+                contentType: 'application/json',
+                data: data,
+                success: function(response) {
+                    console.log('Başarılı:', response);
+                    window.opener.getServersFiles();
+                    window.close();
+                },
+                error: function(xhr, status, error) {
+                    console.error('Hata:', error);
+                }
+            });
+        }else if(conn_type =="GoogleDrive"){
             connectGoogleDrive();
             listGoogleDriveFolders();
         }else{
+            if (!username || !server|| !port || !passwd) {
+                if(!sshkey){
+                    alert('Hata: Eksik alanlar var');
+                    return; 
+                }else{
+                    //sshkey ile bağlan
+                }
+                
+            }
             var data = JSON.stringify({conn_type: conn_type,
                                         username: username,
                                         server: server,
@@ -43,6 +73,9 @@ $(document).ready(function() {
                 }
             });
         }
+        
+
+        
     });
 });
 

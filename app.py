@@ -1,11 +1,11 @@
 from flask import Flask,url_for, jsonify, redirect, request,render_template
-from google.oauth2 import service_account
 from flask_cors import CORS
 import os_folder as mycomp
 from ftpconn import FTPOperations
 from sftpconn import SFTPOperations
 from db import DbMyFtp
 from dropboxIslemleri import DropboxOperations
+from drive_conn import DriveService
 import string
 
 app = Flask(__name__)
@@ -22,6 +22,10 @@ def index():
 @app.route('/serverconnection.html')
 def serverconnection():
     return open('template/serverconnection.html', encoding='utf-8').read()
+
+@app.route('/bookmarks.html')
+def openbookmarks():
+    return open('template/bookmarks.html', encoding='utf-8').read()
 
 @app.route('/file_inf.html')
 def openFileInfo():
@@ -64,6 +68,28 @@ def submit():
             passwd = data.get('passwd')
             sshkey = data.get('sshkey')
             global serverConn
+
+            if conn_type == "DropBox":
+                try:
+                    serverConn = DropboxOperations()
+                except Exception as e:
+                    print(e)
+                    print("Dropbox bağlantısı kurulamadı")
+                    return jsonify({'error': 'var'})
+                if serverConn.access_token:
+                    print("Dropbox bağlantısı kuruldu")
+                    return jsonify({'Bağlantı': 'Başarılı'})
+                return jsonify({'error': 'var'})
+            
+            if conn_type == "GoogleDrive":
+                try:
+                    serverConn = DriveService()
+                except Exception as e:
+                    print(e)
+                    print("Drive bağlantısı kurulamadı")
+                    return jsonify({'error': 'var'})
+                print("Drive bağlantısı kuruldu")
+                return jsonify({'Bağlantı': 'Başarılı'})
             if username and server and port and passwd or sshkey:
                 if conn_type == "FTP":
                     try:
@@ -76,12 +102,7 @@ def submit():
                         serverConn = SFTPOperations(server, int(port), username, passwd)
                     except Exception as e:
                         print(e)
-                        return jsonify({'error': 'var'})
-                elif conn_type == "DropBox":
-                    serverConn = DropboxOperations()
-                    pass
-                    return jsonify({'error': 'var'})
-                    
+                        return jsonify({'error': 'var'})                    
                 return jsonify({'Bağlantı': 'Başarılı'})
             else:
                 return jsonify({'Bağlantı': 'Parametreleri Eksik'})
@@ -101,6 +122,10 @@ def getDirs():
         path = "/"
     global serverConn
     global servers_dirs
+
+    if serverConn is None:
+        return jsonify({"error": "Sunucu bağlantısı kurulmadı"}), 500
+    
     servers_dirs = serverConn.open_folder(path)
     return jsonify(servers_dirs)
 
@@ -199,13 +224,47 @@ def get_localbookmark():
     else:
         return jsonify({"error": "No data found"}), 404
 
-#################################################################
-#DROPBOX
-#################################################################
+@app.route('/api/getBookmarksList', methods=['GET'])
+def get_allbookmark():
+    bookmark_data = db.selectAllBookMarks()
+    if bookmark_data:
+        return jsonify(bookmark_data)
+    else:
+        return jsonify({"error": "No data found"}), 404
 
+@app.route('/api/saveBookmark', methods=['POST'])
+def save_bookmark():
+    if request.method == 'POST':
+        if request.headers['Content-Type'] == 'application/json':
+            data = request.json
+            conn_name = data.get('CONNECTION_NAME') 
+            conn_type = data.get('CONNECTION_TYPE')
+            server = data.get('HOSTNAME')
+            port = data.get('PORT')
+            username = data.get('USERNAME')
+            passwd = data.get('PASSWORD')
+            sshkey = data.get('SSHKEY', None)  # SSH key optional
+            db.insertBookMarks(conn_name,conn_type, username, server, port, passwd)
+            return jsonify({'CEVAP': 'Kayıt başarılı'})
 
+        else:
+            return jsonify({'error': 'Parametreler eksik veya yanlış'})
+    else:
+        return jsonify({'error': 'İçerik tipi "application/json" değil'})
 
+@app.route('/api/deleteBookmark', methods=['POST'])
+def delete_bookmark():
+    if request.method == 'POST':
+        if request.headers['Content-Type'] == 'application/json':
+            data = request.json
+            id = data.get('id')
+            db.deleteBookMarks(id)
+            return jsonify({'CEVAP': 'SİLİNDİ'})
 
+        else:
+            return jsonify({'error': 'Parametreler eksik veya yanlış'})
+    else:
+        return jsonify({'error': 'İçerik tipi "application/json" değil'})
 
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=5502,debug=True)

@@ -63,8 +63,8 @@ class FTPOperations:
             # Dosya izinlerini al
             response = []
             self.ftp.retrlines('LIST ' + filepath, response.append)
-         
-            details['filemod'] =self.rwx_to_octal(response[0].split()[0])
+            details['filemod'] = self.rwx_to_octal(response[0].split()[0])
+            
             # Dosya adı ve yolu
             details['FileName'] = filepath.split('/')[-1]
             details['FilePath'] = filepath
@@ -74,8 +74,8 @@ class FTPOperations:
         except Exception as e:
             details['Error'] = str(e)
         return details
-    
-    def rwx_to_octal(self,rwx):
+
+    def rwx_to_octal(self, rwx):
         """
         Sembolik dosya izinlerini (rwxrwxrwx) oktal formata çevirir (örn: '777').
         
@@ -87,9 +87,9 @@ class FTPOperations:
         """
         permission_map = {'r': 4, 'w': 2, 'x': 1, '-': 0}
     
-        user = sum(permission_map[char] for char in rwx[0:3])
-        group = sum(permission_map[char] for char in rwx[3:6])
-        other = sum(permission_map[char] for char in rwx[6:9])
+        user = sum(permission_map[char] for char in rwx[1:4])
+        group = sum(permission_map[char] for char in rwx[4:7])
+        other = sum(permission_map[char] for char in rwx[7:10])
     
         return f"{user}{group}{other}"
     

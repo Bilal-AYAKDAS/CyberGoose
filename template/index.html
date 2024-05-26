@@ -30,9 +30,7 @@
                              <div class="fa-2x">Cyber Goose</div>
                         </span>
                 </button>
-               
             </li>
-            
             <li class="nav-item dropdown">
                 <button type="button" class="btn btn-dark dropdown-toggle" data-toggle="dropdown">
                     <span class="d-block">
@@ -56,11 +54,11 @@
             </li>
             
             <li class="nav-item dropdown">
-                <button type="button" class="btn btn-dark" onclick="serverConnFunc()">
+                <button type="button" class="btn btn-dark" onclick="openBookMarksList()">
                     <span class="d-block">
                         <i class="fas fa-bookmark fa-2x"></i>
                         </span>
-                        <span class="d-block">Yer İmi Ekle</span>
+                        <span class="d-block">Yer İmi</span>
                 </button>
                
             </li>            
@@ -141,7 +139,7 @@
                 </button>
             </li>
             <li class="nav-item dropdown">
-                    <button type="button" class="btn btn-dark"  aria-haspopup="true" aria-expanded="false" >
+                    <button type="button" class="btn btn-dark"  aria-haspopup="true" aria-expanded="false" onclick="closeConn()" >
                         <span class="d-block">
                             <i class="fas fa-arrow-up fa-2x"></i>
                         </span>
@@ -187,7 +185,7 @@
             </span>
         </button>
     </div>
-    <table class="table table-striped table-hover">
+    <table class="table table-hover">
         <thead>
             <tr>
                 <th>Sıra</th>
@@ -196,10 +194,9 @@
                 <th>Boyut</th>
             </tr>
         </thead>
-        <tbody id="server_tables_body">
-
-        </tbody>
+        <tbody id="server_tables_body"></tbody>
 </div>
+
 
 </body>
 </html>

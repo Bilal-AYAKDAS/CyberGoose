@@ -6,20 +6,32 @@
     
     function updatePath(name) {
         var path = $('#filepath').val();
-        $('#filepath').val(path + '\\' + name);
 
+        $('#filepath').val(path + '/' + name);
         getLocalFiles();
     }
 
+    function closeConn(){
+        location.reload();
+    }
     function openFolderServer(name) {
         var path = $('#serverfilepath').val();
-        if (path.length<1) {
-            $('#serverfilepath').val('/'+name);
-        }else{
-            $('#serverfilepath').val(path+'/'+name);
+        if (name.includes(".")) {
+            return;
+        }
+        if (path.length < 1 || path === '/') {
+            $('#serverfilepath').val('/' + name);
+        } else {
+            // Eğer path sonu "/" ile bitiyorsa, fazladan "/" eklememek için düzeltme yapıyoruz
+            if (path.endsWith('/')) {
+                $('#serverfilepath').val(path + name);
+            } else {
+                $('#serverfilepath').val(path + '/' + name);
+            }
         }
         getServersFiles();
     }
+    
     
     function fileTypeControl(name) {
 
@@ -73,7 +85,7 @@
 
     function get(name) {
         var path = $('#filepath').val();
-        $('#filepath').val(path + '\\' + name);
+        $('#filepath').val(path + '/' + name);
         getLocalFiles();
     }
 
@@ -239,9 +251,11 @@
             contentType: 'application/json',
             data: data,
             success: function(response) {
+                    alert('Dosya başarıyla yüklendi');
                     console.log('Başarılı:',response);
                     openFolderServer("");
                 },error: function(xhr, status, error) {
+                    alert('Dosya yüklenirken hata oluştu');
                     console.error('Hata:', error);
                 }
             });
@@ -264,9 +278,11 @@
             contentType: 'application/json',
             data: data,
             success: function(response) {
+                alert('Dosya başarıyla indirildi');
                     console.log('Başarılı:',response);
                     getLocalFiles();
                 },error: function(xhr, status, error) {
+                    alert('Dosya indirilirken hata oluştu');
                     console.error('Hata:', error);
                 }
             });
@@ -286,6 +302,7 @@
             contentType: 'application/json',
             data: data,
             success: function(response) {
+                    alert('Dosya başarıyla silindi');
                     console.log('Başarılı:',response);
                     openFolderServer("");
                 },error: function(xhr, status, error) {
@@ -308,6 +325,7 @@
             contentType: 'application/json',
             data: data,
             success: function(response) {
+                    alert('Dosya başarıyla silindi');
                     console.log('Başarılı:',response);
                     getLocalFiles();
                 },error: function(xhr, status, error) {
@@ -324,9 +342,9 @@
    
     function turnBackLocal(){
         var path = $('#filepath').val();
-        var newPath = path.split("\\");
+        var newPath = path.split("/");
         newPath.pop();
-        $('#filepath').val(newPath.join("\\"));
+        $('#filepath').val(newPath.join("/"));
         getLocalFiles();
 
     }
@@ -356,7 +374,10 @@
         });
     }
     
-
+    function openBookMarksList(){
+        var formURL = "bookmarks.html";
+        var win = window.open(formURL, "_blank", "resizable=yes,width=1250,height=600");
+    }
         
         
 

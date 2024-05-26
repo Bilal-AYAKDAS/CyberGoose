@@ -27,6 +27,30 @@ class DbMyFtp:
         else:
             return None  # Eğer sonuç yoksa, None döndür.
 
+    def selectAllBookMarks(self):
+        connection = sqlite3.connect("data.db")
+        cursor = connection.cursor()
+        cursor.execute("""SELECT ID,CONNECTION_NAME,CONNECTION_TYPE, HOSTNAME, PORT, USERNAME, PASSWORD 
+                        FROM BOOKMARKS ORDER BY ID """)
+        rows = cursor.fetchall()  
+        connection.close()
+        
+        if rows:
+            data = []
+            for row in rows:
+                data.append({
+                    "ID": row[0],
+                    "CONNECTION_NAME": row[1],
+                    "CONNECTION_TYPE": row[2],
+                    "HOSTNAME": row[3],
+                    "PORT": row[4],
+                    "USERNAME": row[5],
+                    "PASSWORD": row[6]
+                })
+            return data
+        else:
+            return None  # Eğer sonuç yoksa, None döndür.
+        
     def selectLocalBookMarks(self):
         connection = sqlite3.connect("data.db")
         cursor = connection.cursor()
@@ -45,10 +69,10 @@ class DbMyFtp:
         
         
 
-    def insertBookMarks(self,hostname,port,username,password):
+    def insertBookMarks(self,conn_name,conn_type, username, server, port, passwd):
         connection = sqlite3.connect("data.db")
-        sql = "INSERT INTO BOOKMARKS (HOSTNAME,PORT,USERNAME,PASSWORD ) VALUES (?,?,?,?)"
-        values = (hostname,port,username,password)    
+        sql = "INSERT INTO BOOKMARKS (CONNECTION_NAME,CONNECTION_TYPE, HOSTNAME, PORT, USERNAME, PASSWORD) VALUES (?,?,?,?,?,?)"
+        values = (conn_name,conn_type, username, server, port, passwd)    
         connection.execute(sql,values)
         connection.commit()
         connection.close()
