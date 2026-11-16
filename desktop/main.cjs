@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, nativeTheme, shell } = require('electron');
+const { execFile } = require('node:child_process');
 const path = require('node:path');
 const { startBackend } = require('./backend.cjs');
 
@@ -76,6 +77,17 @@ ipcMain.handle('cybergoose:open-external', async (_event, url) => {
   }
   if (parsed.protocol !== 'https:') throw new Error('Yalnızca https bağlantıları açılabilir');
   await shell.openExternal(parsed.toString());
+});
+
+// Windows Uzak Masaüstü (mstsc.exe) başlatıcısı: yalnızca geçerli host/IP ve port kabul edilir.
+ipcMain.handle('cybergoose:launch-rdp', async (_event, host, port) => {
+  if (process.platform !== 'win32') throw new Error('Uzak Masaüstü (mstsc) yalnızca Windows üzerinde desteklenir');
+  const cleanHost = String(host || '').trim();
+  if (!/^[a-zA-Z0-9._-]+$/.test(cleanHost)) throw new Error('Geçersiz sunucu adresi');
+  const portNum = port ? Number(port) : 3389;
+  if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) throw new Error('Geçersiz RDP portu');
+  const target = portNum === 3389 ? cleanHost : `${cleanHost}:${portNum}`;
+  execFile('mstsc.exe', [`/v:${target}`], { windowsHide: false }, () => {});
 });
 
 // Yerel API tek sefer başlatılır; renderer `cyberGoose.backend()` ile bekler.

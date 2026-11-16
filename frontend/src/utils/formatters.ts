@@ -39,6 +39,7 @@ const protocolLabels: Record<ConnectionType, string> = {
   SFTP: 'SFTP',
   Dropbox: 'DROPBOX',
   GoogleDrive: 'DRIVE',
+  OneDrive: 'ONEDRIVE',
 }
 
 export function protocolLabel(type: ConnectionType): string {
@@ -46,7 +47,7 @@ export function protocolLabel(type: ConnectionType): string {
 }
 
 export function isCloud(type: ConnectionType): boolean {
-  return type === 'Dropbox' || type === 'GoogleDrive'
+  return type === 'Dropbox' || type === 'GoogleDrive' || type === 'OneDrive'
 }
 
 /** Kenar çubuğu satırı: `kullanıcı@host:port`. Parola asla gösterilmez. */

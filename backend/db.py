@@ -1,12 +1,42 @@
 """SQLite kalıcılığı: kayıtlı bağlantılar ve klasör yer imleri.
 
-Parolalar API yanıtlarında hiçbir zaman dönmez; yalnızca `hasPassword` bilgisi verilir.
-Not: Kayıtlı parolalar hâlâ düz metin saklanıyor; işletim sistemi secret store'una taşınması roadmap'te.
+Parolalar SQLite yerine işletim sistemi secret store'unda (`keyring` / Windows Credential Manager)
+saklanır ve API yanıtlarında hiçbir zaman dönmez; yalnızca `hasPassword` bilgisi verilir.
 """
 import sqlite3
 from contextlib import closing
 
+import keyring
+
 from config import DB_PATH
+
+KEYRING_SERVICE = "CyberGoose"
+
+
+def _secret_key(connection_id) -> str:
+    return f"connection:{connection_id}"
+
+
+def _get_secret(connection_id) -> str | None:
+    try:
+        return keyring.get_password(KEYRING_SERVICE, _secret_key(connection_id))
+    except Exception:
+        return None
+
+
+def _set_secret(connection_id, password: str) -> bool:
+    try:
+        keyring.set_password(KEYRING_SERVICE, _secret_key(connection_id), password)
+        return True
+    except Exception:
+        return False
+
+
+def _delete_secret(connection_id) -> None:
+    try:
+        keyring.delete_password(KEYRING_SERVICE, _secret_key(connection_id))
+    except Exception:
+        pass
 
 
 class DbMyFtp:
@@ -39,6 +69,12 @@ class DbMyFtp:
                 );
                 """
             )
+            legacy_rows = connection.execute(
+                "SELECT ID, PASSWORD FROM BOOKMARKS WHERE PASSWORD IS NOT NULL AND PASSWORD != ''"
+            ).fetchall()
+            for row_id, legacy_password in legacy_rows:
+                if _set_secret(row_id, legacy_password):
+                    connection.execute("UPDATE BOOKMARKS SET PASSWORD = NULL WHERE ID = ?", (row_id,))
             connection.commit()
 
     # ------------------------------------------------------------ bağlantılar
@@ -58,7 +94,7 @@ class DbMyFtp:
                 "host": row[3] or "",
                 "port": "" if row[4] is None else str(row[4]),
                 "username": "" if row[5] is None else str(row[5]),
-                "hasPassword": bool(row[6]),
+                "hasPassword": bool(_get_secret(row[0])) or bool(row[6]),
             }
             for row in rows
         ]
@@ -71,33 +107,43 @@ class DbMyFtp:
             ).fetchone()
         if not row:
             return None
-        return {"type": row[0], "host": row[1], "port": row[2], "username": row[3], "password": row[4]}
+        password = _get_secret(connection_id) or row[4]
+        return {"type": row[0], "host": row[1], "port": row[2], "username": row[3], "password": password}
 
-    def insert_connection(self, name, conn_type, host, port, username):
+    def insert_connection(self, name, conn_type, host, port, username, password=None):
         with self._connect() as connection:
             cursor = connection.execute(
                 "INSERT INTO BOOKMARKS (CONNECTION_NAME, CONNECTION_TYPE, HOSTNAME, PORT, USERNAME, PASSWORD) VALUES (?,?,?,?,?,NULL)",
                 (name, conn_type, host, port, username),
             )
             connection.commit()
-            return cursor.lastrowid
+            connection_id = cursor.lastrowid
+        if password:
+            _set_secret(connection_id, password)
+        return connection_id
 
-    def update_connection(self, connection_id, name, conn_type, host, port, username):
-        """Kayıtlı parolaya dokunmaz."""
+    def update_connection(self, connection_id, name, conn_type, host, port, username, password=None):
+        """Parola verilmezse mevcut kayıtlı parolaya dokunmaz."""
         with self._connect() as connection:
             cursor = connection.execute(
                 "UPDATE BOOKMARKS SET CONNECTION_NAME = ?, CONNECTION_TYPE = ?, HOSTNAME = ?, PORT = ?, USERNAME = ? WHERE ID = ?",
                 (name, conn_type, host, port, username, connection_id),
             )
             connection.commit()
-            return cursor.rowcount > 0
+            updated = cursor.rowcount > 0
+        if updated and password:
+            _set_secret(connection_id, password)
+        return updated
 
     def delete_connection(self, connection_id):
         with self._connect() as connection:
             connection.execute("DELETE FROM FOLDER_BOOKMARKS WHERE CONNECTION_ID = ?", (connection_id,))
             cursor = connection.execute("DELETE FROM BOOKMARKS WHERE ID = ?", (connection_id,))
             connection.commit()
-            return cursor.rowcount > 0
+            deleted = cursor.rowcount > 0
+        if deleted:
+            _delete_secret(connection_id)
+        return deleted
 
     # ------------------------------------------------------------ klasör yer imleri
 

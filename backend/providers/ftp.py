@@ -14,6 +14,7 @@ class FTPOperations:
         self.username = username
         self.tls = tls
         self.ftp = FTP_TLS(timeout=timeout) if tls else FTP(timeout=timeout)
+        self.ftp.encoding = 'utf-8'
         self.ftp.connect(host, port)
         self.ftp.login(username, password)
         if tls:

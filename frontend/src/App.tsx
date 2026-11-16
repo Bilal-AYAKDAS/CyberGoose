@@ -3,56 +3,32 @@ import './styles/app.css'
 import { StatusBar, TitleBar, Toolbar } from './components/AppChrome'
 import { BookmarksPanel } from './components/BookmarksPanel'
 import { ConfirmDialog } from './components/ConfirmDialog'
-import { ConnectionModal, type ConnectOutcome } from './components/ConnectionModal'
+import { ConnectionModal } from './components/ConnectionModal'
 import { ContextMenu, type MenuItem } from './components/ContextMenu'
 import { FileInspector } from './components/FileInspector'
 import { FileManagerView } from './components/FileManagerView'
 import { Notice } from './components/Notice'
+import { PromptDialog } from './components/PromptDialog'
 import { Sidebar } from './components/Sidebar'
+import { TerminalDrawer } from './components/TerminalDrawer'
 import { TransferQueue } from './components/TransferQueue'
+import { useBookmarks } from './hooks/useBookmarks'
+import { toProfile, useConnections } from './hooks/useConnections'
 import { useDirectory } from './hooks/useDirectory'
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useTheme } from './hooks/useTheme'
-import { ApiError, api } from './services/apiClient'
-import type {
-  ConnectionFormValues,
-  ConnectionProfile,
-  ConnectionStatus,
-  FileEntry,
-  FolderBookmark,
-  PaneId,
-  SavedConnection,
-  TransferItem,
-} from './types'
-import { connectionLabel, isCloud } from './utils/formatters'
-
-/** Bulut hesapları kayıtlı bağlantı değildir; kenar çubuğunda her zaman görünür. */
-const CLOUD_ACCOUNTS: ConnectionProfile[] = [
-  { id: 'dropbox', name: 'Dropbox', type: 'Dropbox', host: '', port: '', username: '', hasPassword: false, saved: false },
-  { id: 'drive', name: 'Google Drive', type: 'GoogleDrive', host: '', port: '', username: '', hasPassword: false, saved: false },
-]
-
-const toProfile = (saved: SavedConnection): ConnectionProfile => ({
-  id: String(saved.id),
-  name: saved.name,
-  type: saved.type,
-  host: saved.host,
-  port: saved.port,
-  username: saved.username,
-  hasPassword: saved.hasPassword,
-  saved: true,
-})
+import { useTransferQueue } from './hooks/useTransferQueue'
+import { api } from './services/apiClient'
+import type { ConnectionProfile, FileEntry, PaneId } from './types'
 
 type DialogState = { open: false } | { open: true; initial?: ConnectionProfile }
 type MenuState = { x: number; y: number; items: MenuItem[] } | null
 type ConfirmState = { title: string; message: string; confirmLabel: string; action: () => Promise<void> } | null
+type PromptState = { title: string; label: string; initialValue?: string; confirmLabel: string; placeholder?: string; action: (value: string) => Promise<void> } | null
 type PaneNotice = { tone: 'warn' | 'error'; title: string } | null
 
 function matches(entry: FileEntry, query: string) {
   return entry.name.toLocaleLowerCase('tr').includes(query.toLocaleLowerCase('tr'))
-}
-
-function isTypingTarget(target: EventTarget | null) {
-  return target instanceof HTMLElement && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
 }
 
 const messageOf = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback)
@@ -60,59 +36,21 @@ const messageOf = (error: unknown, fallback: string) => (error instanceof Error 
 /**
  * Uygulama penceresi (tasarımdaki AppWindow):
  * başlık 36 · araç çubuğu 40 · [kenar çubuğu 220 | panel | 1px | panel] · transfer kuyruğu · durum 24.
- * Tüm veriler Flask API'sinden gelir.
+ * Durum mantığı özel hook'lara (useConnections, useTransferQueue, useBookmarks, useDirectory) ayrılmıştır.
  */
 function App({ onReady }: { onReady?: () => void }) {
   const { theme, toggleTheme } = useTheme()
-
-  // ---------------------------------------------------------------- bağlantılar
-  const [savedConnections, setSavedConnections] = useState<ConnectionProfile[]>([])
-  const [connectionsError, setConnectionsError] = useState<string | null>(null)
-  const [activeId, setActiveId] = useState<string | null>(null)
-  const [connectedId, setConnectedId] = useState<string | null>(null)
-  const [connectingId, setConnectingId] = useState<string | null>(null)
-  const [failedId, setFailedId] = useState<string | null>(null)
-  const [remoteNotice, setRemoteNotice] = useState<PaneNotice>(null)
-
-  const connections = useMemo(() => [...savedConnections, ...CLOUD_ACCOUNTS], [savedConnections])
-  const activeConnection = connections.find((connection) => connection.id === activeId) ?? null
-  const statusOf = useCallback((id: string): ConnectionStatus => {
-    if (id === connectingId) return 'connecting'
-    if (id === connectedId) return 'connected'
-    if (id === failedId) return 'error'
-    return 'offline'
-  }, [connectedId, connectingId, failedId])
-  const activeStatus: ConnectionStatus = activeConnection ? statusOf(activeConnection.id) : 'offline'
-  const isConnected = activeStatus === 'connected'
-
-  const loadConnections = useCallback(async () => {
-    try {
-      setSavedConnections((await api.listConnections()).map(toProfile))
-      setConnectionsError(null)
-    } catch (error) {
-      setConnectionsError(messageOf(error, 'Kayıtlı bağlantılar yüklenemedi'))
-    }
-  }, [])
 
   // ---------------------------------------------------------------- paneller
   const [homePath, setHomePath] = useState<string | null>(null)
   const [localPath, setLocalPath] = useState<string | null>(null)
   const [remotePath, setRemotePath] = useState('/')
   const [focusedPane, setFocusedPane] = useState<PaneId>('local')
-  const [selection, setSelection] = useState<Record<PaneId, string | null>>({ local: null, remote: null })
+  const [selection, setSelection] = useState<Record<PaneId, string[]>>({ local: [], remote: [] })
   const [query, setQuery] = useState('')
   const [editSignal, setEditSignal] = useState<Record<PaneId, number>>({ local: 0, remote: 0 })
-
-  const local = useDirectory('local', localPath, true)
-  const remote = useDirectory('remote', remotePath, isConnected)
-
-  const visibleLocal = useMemo(() => focusedPane === 'local' && query ? local.entries.filter((entry) => matches(entry, query)) : local.entries, [focusedPane, query, local.entries])
-  const visibleRemote = useMemo(() => focusedPane === 'remote' && query ? remote.entries.filter((entry) => matches(entry, query)) : remote.entries, [focusedPane, query, remote.entries])
-
-  const selectedLocal = local.entries.find((entry) => entry.name === selection.local) ?? null
-  const selectedRemote = isConnected ? remote.entries.find((entry) => entry.name === selection.remote) ?? null : null
-  const focusedSelection = focusedPane === 'local' ? selectedLocal : selectedRemote
-  const focusedDir = focusedPane === 'local' ? local : remote
+  const [remoteNotice, setRemoteNotice] = useState<PaneNotice>(null)
+  const [dialog, setDialog] = useState<DialogState>({ open: false })
 
   const focusPane = useCallback((pane: PaneId) => {
     setFocusedPane((current) => {
@@ -122,18 +60,78 @@ function App({ onReady }: { onReady?: () => void }) {
   }, [])
 
   const navigate = useCallback((pane: PaneId, path: string) => {
-    setSelection((current) => ({ ...current, [pane]: null }))
+    setSelection((current) => ({ ...current, [pane]: [] }))
     setQuery('')
     if (pane === 'local') setLocalPath(path)
     else setRemotePath(path)
   }, [])
+
+  // ---------------------------------------------------------------- bağlantılar
+  const handleConnected = useCallback((startPath: string) => {
+    setRemotePath(startPath)
+    setSelection((current) => ({ ...current, remote: [] }))
+    focusPane('remote')
+  }, [focusPane])
+
+  const handleDisconnected = useCallback(() => {
+    setSelection((current) => ({ ...current, remote: [] }))
+    focusPane('local')
+  }, [focusPane])
+
+  const handleNeedPassword = useCallback((connection: ConnectionProfile) => {
+    setDialog({ open: true, initial: connection })
+  }, [])
+
+  const {
+    connections,
+    connectionsError,
+    activeId,
+    activeConnection,
+    activeStatus,
+    isConnected,
+    statusOf,
+    setSavedConnections,
+    setConnectionsError,
+    setActiveId,
+    setConnectedId,
+    loadConnections,
+    openConnection,
+    disconnect,
+    saveFromDialog,
+    connectFromDialog,
+  } = useConnections({
+    onConnected: handleConnected,
+    onDisconnected: handleDisconnected,
+    onNeedPassword: handleNeedPassword,
+    onNotice: setRemoteNotice,
+  })
+
+  // ---------------------------------------------------------------- klasörler ve seçimler
+  const local = useDirectory('local', localPath, true)
+  const remote = useDirectory('remote', remotePath, isConnected)
+
+  const visibleLocal = useMemo(() => focusedPane === 'local' && query ? local.entries.filter((entry) => matches(entry, query)) : local.entries, [focusedPane, query, local.entries])
+  const visibleRemote = useMemo(() => focusedPane === 'remote' && query ? remote.entries.filter((entry) => matches(entry, query)) : remote.entries, [focusedPane, query, remote.entries])
+
+  const selectedLocalEntries = useMemo(() => local.entries.filter((entry) => selection.local.includes(entry.name)), [local.entries, selection.local])
+  const selectedRemoteEntries = useMemo(() => isConnected ? remote.entries.filter((entry) => selection.remote.includes(entry.name)) : [], [isConnected, remote.entries, selection.remote])
+  const focusedSelections = focusedPane === 'local' ? selectedLocalEntries : selectedRemoteEntries
+  const focusedSelection = focusedSelections.at(-1) ?? null
+  const focusedDir = focusedPane === 'local' ? local : remote
+
+  const selectedFilesSize = useMemo(() => {
+    const files = focusedSelections.filter((entry) => entry.kind === 'file')
+    return files.length ? files.reduce((sum, entry) => sum + (entry.size ?? 0), 0) : null
+  }, [focusedSelections])
 
   // ---------------------------------------------------------------- ilk yükleme
   const readySent = useRef(false)
   useEffect(() => {
     let active = true
     Promise.allSettled([
-      loadConnections(),
+      api.listConnections()
+        .then((items) => { if (active) { setSavedConnections(items.map(toProfile)); setConnectionsError(null) } })
+        .catch((error) => { if (active) setConnectionsError(messageOf(error, 'Kayıtlı bağlantılar yüklenemedi')) }),
       api.localHome().then(({ path }) => { if (active) setHomePath(path) }),
       api.session().then((session) => {
         if (active && session.connected && session.connectionId) {
@@ -148,182 +146,85 @@ function App({ onReady }: { onReady?: () => void }) {
       }
     })
     return () => { active = false }
-  }, [loadConnections, onReady])
+  }, [onReady, setActiveId, setConnectedId, setConnectionsError, setSavedConnections])
 
-  // ---------------------------------------------------------------- bağlanma
-  const [dialog, setDialog] = useState<DialogState>({ open: false })
-
-  const connectTo = useCallback(async (connection: ConnectionProfile, password?: string, startPath = '/'): Promise<ConnectOutcome> => {
-    setConnectingId(connection.id)
-    setFailedId(null)
-    setActiveId(connection.id)
-    setRemoteNotice(null)
-    try {
-      const result = await api.connect({
-        type: connection.type,
-        connectionId: connection.saved ? connection.id : undefined,
-        clientId: connection.id,
-        password,
-      })
-      if ('pending' in result) return { pending: result.message }
-      setConnectedId(connection.id)
-      setRemotePath(startPath)
-      setSelection((current) => ({ ...current, remote: null }))
-      focusPane('remote')
-    } catch (error) {
-      setFailedId(connection.id)
-      throw error
-    } finally {
-      setConnectingId((current) => (current === connection.id ? null : current))
-    }
-  }, [focusPane])
-
-  /** Kenar çubuğundan veya yer iminden bağlanma: parola gerekiyorsa diyaloğu açar. */
-  const openConnection = useCallback(async (connection: ConnectionProfile, startPath = '/') => {
-    if (statusOf(connection.id) === 'connected') {
-      setActiveId(connection.id)
-      if (startPath !== '/') navigate('remote', startPath)
-      focusPane('remote')
-      return
-    }
-    if (connection.saved && !connection.hasPassword) {
-      setDialog({ open: true, initial: connection })
-      return
-    }
-    try {
-      const outcome = await connectTo(connection, undefined, startPath)
-      if (outcome && 'pending' in outcome) setRemoteNotice({ tone: 'warn', title: outcome.pending })
-    } catch (error) {
-      if (error instanceof ApiError && error.code === 'password_required') {
-        setDialog({ open: true, initial: connection })
-        return
-      }
-      setRemoteNotice({ tone: 'error', title: messageOf(error, 'Bağlantı kurulamadı') })
-    }
-  }, [connectTo, focusPane, navigate, statusOf])
-
-  const disconnect = useCallback(async () => {
-    await api.disconnect().catch(() => undefined)
-    setConnectedId(null)
-    setSelection((current) => ({ ...current, remote: null }))
-    focusPane('local')
-  }, [focusPane])
-
-  const saveFromDialog = async (values: ConnectionFormValues, initial?: ConnectionProfile) => {
-    const input = { name: values.name.trim(), type: values.type, host: values.host.trim(), port: values.port, username: values.username.trim() }
-    const saved = initial?.saved ? await api.updateConnection(initial.id, input) : await api.createConnection(input)
-    await loadConnections()
-    return toProfile(saved)
-  }
-
-  const connectFromDialog = async (values: ConnectionFormValues, initial?: ConnectionProfile): Promise<ConnectOutcome> => {
-    if (isCloud(values.type)) {
-      const account = CLOUD_ACCOUNTS.find((item) => item.type === values.type) as ConnectionProfile
-      return connectTo(account)
-    }
-    if (initial?.saved) {
-      const profile = await saveFromDialog(values, initial)
-      return connectTo(profile, values.password || undefined)
-    }
-    // Yeni sunucu: önce bağlan, başarılıysa parolasız kaydet.
-    const draftId = `new-${Date.now()}`
-    setConnectingId(draftId)
-    try {
-      await api.connect({ type: values.type, host: values.host.trim(), port: values.port, username: values.username.trim(), password: values.password, clientId: draftId })
-    } finally {
-      setConnectingId(null)
-    }
-    const profile = await saveFromDialog(values)
-    setConnectedId(profile.id)
-    setActiveId(profile.id)
-    setRemotePath('/')
-    setSelection((current) => ({ ...current, remote: null }))
-    focusPane('remote')
-  }
-
-  // ---------------------------------------------------------------- yer imleri
-  const [bookmarks, setBookmarks] = useState<FolderBookmark[]>([])
-  const [bookmarksError, setBookmarksError] = useState<string | null>(null)
-  const [bookmarksOpen, setBookmarksOpen] = useState(false)
-
-  useEffect(() => {
-    if (!bookmarksOpen) return
-    api.listBookmarks().then((items) => { setBookmarks(items); setBookmarksError(null) })
-      .catch((error) => setBookmarksError(messageOf(error, 'Yer imleri yüklenemedi')))
-  }, [bookmarksOpen])
+  // ---------------------------------------------------------------- yer imleri ve transferler
+  const { bookmarks, bookmarksError, bookmarksOpen, setBookmarksOpen, addBookmark, deleteBookmark } = useBookmarks()
+  const { transfers, queueOpen, activeTransfer, setQueueOpen, enqueue, enqueueMany, cancelTransfer, retryTransfer, removeTransfer, clearFinished } = useTransferQueue({
+    localPath: local.path,
+    remotePath,
+    activeConnection,
+    reloadLocal: local.reload,
+    reloadRemote: remote.reload,
+  })
 
   const currentFolder = focusedPane === 'local'
     ? (local.path ? { label: local.crumbs.at(-1)?.name || local.path, path: local.path, connectionId: null } : null)
     : (isConnected && remote.path && activeConnection ? { label: remote.crumbs.at(-1)?.name === '/' ? activeConnection.name : remote.crumbs.at(-1)?.name ?? remote.path, path: remote.path, connectionId: activeConnection.id } : null)
 
-  // ---------------------------------------------------------------- transfer kuyruğu
-  const [transfers, setTransfers] = useState<TransferItem[]>([])
-  const [queueOpen, setQueueOpen] = useState(true)
-  const runningRef = useRef(false)
-  const reloadLocal = local.reload
-  const reloadRemote = remote.reload
-
-  const enqueue = (entry: FileEntry, direction: TransferItem['direction']) => {
-    if (!local.path || !remote.path || !activeConnection) return
-    const remoteLabel = `${connectionLabel(activeConnection)}:${remote.path}`
-    setTransfers((items) => [...items, {
-      id: crypto.randomUUID(),
-      name: entry.name,
-      direction,
-      localDir: local.path as string,
-      remoteDir: remote.path as string,
-      from: direction === 'upload' ? local.path as string : remoteLabel,
-      to: direction === 'upload' ? remoteLabel : local.path as string,
-      size: entry.size,
-      status: 'queued',
-    }])
-    setQueueOpen(true)
-  }
-
-  useEffect(() => {
-    if (runningRef.current || transfers.some((item) => item.status === 'transferring')) return
-    const next = transfers.find((item) => item.status === 'queued')
-    if (!next) return
-    runningRef.current = true
-    const startedAt = Date.now()
-    setTransfers((items) => items.map((item) => item.id === next.id ? { ...item, status: 'transferring', startedAt, error: undefined, errorCode: undefined } : item))
-    api.transfer({ direction: next.direction, name: next.name, localDir: next.localDir, remoteDir: next.remoteDir, overwrite: next.overwrite })
-      .then((result) => {
-        setTransfers((items) => items.map((item) => item.id === next.id ? { ...item, status: 'completed', size: result.size, finishedAt: Date.now() } : item))
-        if (next.direction === 'upload') reloadRemote()
-        else reloadLocal()
-      })
-      .catch((error: unknown) => {
-        setTransfers((items) => items.map((item) => item.id === next.id ? {
-          ...item,
-          status: 'error',
-          error: messageOf(error, 'Aktarım başarısız'),
-          errorCode: error instanceof ApiError ? error.code : undefined,
-          finishedAt: Date.now(),
-        } : item))
-      })
-      .finally(() => { runningRef.current = false })
-  }, [transfers, reloadLocal, reloadRemote])
-
-  const activeTransfer = transfers.find((item) => item.status === 'transferring')
-
-  // ---------------------------------------------------------------- silme, menüler, kısayollar
+  // ---------------------------------------------------------------- dosya eylemleri, menüler, kısayollar
   const [confirm, setConfirm] = useState<ConfirmState>(null)
+  const [prompt, setPrompt] = useState<PromptState>(null)
   const [menu, setMenu] = useState<MenuState>(null)
   const [inspectedEntry, setInspectedEntry] = useState<FileEntry | null>(null)
+  const [terminalOpen, setTerminalOpen] = useState(false)
 
-  const askDelete = (pane: PaneId, entry: FileEntry) => {
-    if (entry.kind === 'folder') return
+  const reloadPane = (pane: PaneId) => {
+    if (pane === 'local') local.reload()
+    else remote.reload()
+  }
+
+  const askDelete = (pane: PaneId, entries: FileEntry[]) => {
+    if (!entries.length) return
+    const single = entries.length === 1 ? entries[0] : null
+    const title = single ? (single.kind === 'folder' ? 'Klasörü sil' : 'Dosyayı sil') : `${entries.length} öğeyi sil`
+    const message = single
+      ? (single.kind === 'folder'
+        ? `${single.name} klasörü ve içindeki tüm öğeler kalıcı olarak silinecek. Bu işlem geri alınamaz.`
+        : `${single.name} kalıcı olarak silinecek. Bu işlem geri alınamaz.`)
+      : `Seçili ${entries.length} öğe kalıcı olarak silinecek. Bu işlem geri alınamaz.`
     setConfirm({
-      title: 'Dosyayı sil',
-      message: `${entry.name} kalıcı olarak silinecek. Bu işlem geri alınamaz.`,
+      title,
+      message,
       confirmLabel: 'Sil',
       action: async () => {
-        await api.deleteEntry(pane, entry.path)
-        setSelection((current) => ({ ...current, [pane]: null }))
+        for (const item of entries) {
+          await api.deleteEntry(pane, item.path)
+          if (inspectedEntry?.path === item.path) setInspectedEntry(null)
+        }
+        setSelection((current) => ({ ...current, [pane]: [] }))
+        reloadPane(pane)
+      },
+    })
+  }
+
+  const askCreateFolder = (pane: PaneId) => {
+    const parentPath = pane === 'local' ? local.path : (isConnected ? remote.path : null)
+    if (!parentPath) return
+    setPrompt({
+      title: 'Yeni klasör',
+      label: 'Klasör adı',
+      confirmLabel: 'Oluştur',
+      placeholder: 'Yeni klasör',
+      action: async (name) => {
+        await api.mkdir(pane, parentPath, name)
+        reloadPane(pane)
+      },
+    })
+  }
+
+  const askRename = (pane: PaneId, entry: FileEntry) => {
+    setPrompt({
+      title: 'Yeniden adlandır',
+      label: 'Yeni ad',
+      initialValue: entry.name,
+      confirmLabel: 'Kaydet',
+      action: async (newName) => {
+        if (newName === entry.name) return
+        await api.renameEntry(pane, entry.path, newName)
+        setSelection((current) => ({ ...current, [pane]: [newName] }))
         if (inspectedEntry?.path === entry.path) setInspectedEntry(null)
-        if (pane === 'local') reloadLocal()
-        else reloadRemote()
+        reloadPane(pane)
       },
     })
   }
@@ -333,20 +234,37 @@ function App({ onReady }: { onReady?: () => void }) {
     else setInspectedEntry(entry)
   }
 
-  const canUpload = Boolean(selectedLocal?.kind === 'file' && isConnected && remote.path)
-  const canDownload = Boolean(selectedRemote?.kind === 'file' && local.path)
+  const canUpload = Boolean(selectedLocalEntries.some((entry) => entry.kind === 'file') && isConnected && remote.path)
+  const canDownload = Boolean(selectedRemoteEntries.some((entry) => entry.kind === 'file') && local.path)
+  const canCreateFolder = Boolean(focusedPane === 'local' ? local.path : (isConnected && remote.path))
 
   const fileMenu = (pane: PaneId, entry: FileEntry, event: MouseEvent) => {
-    const items: MenuItem[] = entry.kind === 'folder'
-      ? [{ label: 'Aç', onSelect: () => navigate(pane, entry.path), hint: 'Enter' }]
-      : [
-        { label: 'Detaylar', onSelect: () => setInspectedEntry(entry), hint: 'Enter' },
+    const paneSelections = pane === 'local' ? selectedLocalEntries : selectedRemoteEntries
+    const targets = paneSelections.some((item) => item.name === entry.name) ? paneSelections : [entry]
+    const items: MenuItem[] = targets.length > 1
+      ? [
         pane === 'local'
-          ? { label: 'Yükle', onSelect: () => enqueue(entry, 'upload'), disabled: !isConnected, hint: 'Ctrl+U' }
-          : { label: 'İndir', onSelect: () => enqueue(entry, 'download'), hint: 'Ctrl+D' },
-        { label: 'Yolu kopyala', onSelect: () => { void navigator.clipboard?.writeText(entry.path) } },
-        { label: 'Sil', onSelect: () => askDelete(pane, entry), danger: true, hint: 'Del' },
+          ? { label: `Yükle (${targets.filter((item) => item.kind === 'file').length})`, onSelect: () => enqueueMany(targets, 'upload'), disabled: !isConnected || !targets.some((item) => item.kind === 'file'), hint: 'Ctrl+U' }
+          : { label: `İndir (${targets.filter((item) => item.kind === 'file').length})`, onSelect: () => enqueueMany(targets, 'download'), disabled: !targets.some((item) => item.kind === 'file'), hint: 'Ctrl+D' },
+        { label: `Sil (${targets.length})`, onSelect: () => askDelete(pane, targets), danger: true, hint: 'Del' },
       ]
+      : entry.kind === 'folder'
+        ? [
+          { label: 'Aç', onSelect: () => navigate(pane, entry.path), hint: 'Enter' },
+          { label: 'Yeni klasör', onSelect: () => askCreateFolder(pane), hint: 'Ctrl+Shift+N' },
+          { label: 'Yeniden adlandır', onSelect: () => askRename(pane, entry), hint: 'F2' },
+          { label: 'Sil', onSelect: () => askDelete(pane, [entry]), danger: true, hint: 'Del' },
+        ]
+        : [
+          { label: 'Detaylar', onSelect: () => setInspectedEntry(entry), hint: 'Enter' },
+          pane === 'local'
+            ? { label: 'Yükle', onSelect: () => enqueue(entry, 'upload'), disabled: !isConnected, hint: 'Ctrl+U' }
+            : { label: 'İndir', onSelect: () => enqueue(entry, 'download'), hint: 'Ctrl+D' },
+          { label: 'Yeni klasör', onSelect: () => askCreateFolder(pane), hint: 'Ctrl+Shift+N' },
+          { label: 'Yeniden adlandır', onSelect: () => askRename(pane, entry), hint: 'F2' },
+          { label: 'Yolu kopyala', onSelect: () => { void navigator.clipboard?.writeText(entry.path) } },
+          { label: 'Sil', onSelect: () => askDelete(pane, [entry]), danger: true, hint: 'Del' },
+        ]
     setMenu({ x: event.clientX, y: event.clientY, items })
   }
 
@@ -358,6 +276,16 @@ function App({ onReady }: { onReady?: () => void }) {
         : { label: 'Bağlan', onSelect: () => { void openConnection(connection) } },
     ]
     if (connection.saved) {
+      if (window.cyberGoose?.launchRdp) {
+        items.push({
+          label: 'Uzak Masaüstü (RDP)',
+          onSelect: () => {
+            void window.cyberGoose?.launchRdp?.(connection.host)?.catch((error) => {
+              setRemoteNotice({ tone: 'error', title: messageOf(error, 'Uzak Masaüstü başlatılamadı') })
+            })
+          },
+        })
+      }
       items.push(
         { label: 'Düzenle', onSelect: () => setDialog({ open: true, initial: connection }) },
         { label: 'Adresi kopyala', onSelect: () => { void navigator.clipboard?.writeText(`${connection.username ? `${connection.username}@` : ''}${connection.host}:${connection.port}`) } },
@@ -381,46 +309,41 @@ function App({ onReady }: { onReady?: () => void }) {
     setMenu({ x: event.clientX, y: event.clientY, items })
   }
 
-  const shortcutsRef = useRef<(event: KeyboardEvent) => void>(() => undefined)
-  const handleShortcut = (event: KeyboardEvent) => {
-    if (dialog.open || confirm || menu) return
+  useKeyboardShortcuts((event) => {
     const mod = event.ctrlKey || event.metaKey
     const key = event.key.toLowerCase()
     if (mod && key === 'l') {
       event.preventDefault()
       setEditSignal((current) => ({ ...current, [focusedPane]: current[focusedPane] + 1 }))
-      return
-    }
-    if (mod && key === 'f') {
+    } else if (mod && key === 'f') {
       event.preventDefault()
       document.getElementById('cg-search-input')?.focus()
-      return
-    }
-    if (isTypingTarget(event.target)) return
-    if (event.key === 'F5') {
+    } else if (event.key === 'F5') {
       event.preventDefault()
       focusedDir.reload()
-    } else if (event.key === 'Delete' && focusedSelection) {
+    } else if (event.key === 'F2' && focusedSelection) {
       event.preventDefault()
-      askDelete(focusedPane, focusedSelection)
-    } else if (mod && key === 'u' && canUpload && selectedLocal) {
+      askRename(focusedPane, focusedSelection)
+    } else if (mod && event.shiftKey && key === 'n' && canCreateFolder) {
       event.preventDefault()
-      enqueue(selectedLocal, 'upload')
-    } else if (mod && key === 'd' && canDownload && selectedRemote) {
+      askCreateFolder(focusedPane)
+    } else if (event.key === 'Delete' && focusedSelections.length) {
       event.preventDefault()
-      enqueue(selectedRemote, 'download')
+      askDelete(focusedPane, focusedSelections)
+    } else if (mod && key === 'u' && canUpload) {
+      event.preventDefault()
+      enqueueMany(selectedLocalEntries, 'upload')
+    } else if (mod && key === 'd' && canDownload) {
+      event.preventDefault()
+      enqueueMany(selectedRemoteEntries, 'download')
     }
-  }
-  useEffect(() => { shortcutsRef.current = handleShortcut })
-  useEffect(() => {
-    const handler = (event: KeyboardEvent) => shortcutsRef.current(event)
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [])
+  }, dialog.open || Boolean(confirm) || Boolean(prompt) || Boolean(menu))
 
   // ---------------------------------------------------------------- görünüm
   const localPane = { ...local, visibleEntries: visibleLocal, editSignal: editSignal.local }
   const remotePane = { ...remote, visibleEntries: visibleRemote, editSignal: editSignal.remote }
+
+  const canTerminal = Boolean(isConnected && activeConnection?.type === 'SFTP')
 
   return (
     <div className="cg-window">
@@ -429,16 +352,21 @@ function App({ onReady }: { onReady?: () => void }) {
         focusedPane={focusedPane}
         canUpload={canUpload}
         canDownload={canDownload}
+        canCreateFolder={canCreateFolder}
         canInspect={Boolean(focusedSelection && focusedSelection.kind === 'file')}
-        canDelete={Boolean(focusedSelection && focusedSelection.kind === 'file')}
+        canDelete={Boolean(focusedSelections.length)}
+        canTerminal={canTerminal}
+        terminalOpen={terminalOpen}
         query={query}
         bookmarksOpen={bookmarksOpen}
         onNewConnection={() => setDialog({ open: true })}
-        onUpload={() => selectedLocal && enqueue(selectedLocal, 'upload')}
-        onDownload={() => selectedRemote && enqueue(selectedRemote, 'download')}
+        onUpload={() => enqueueMany(selectedLocalEntries, 'upload')}
+        onDownload={() => enqueueMany(selectedRemoteEntries, 'download')}
+        onCreateFolder={() => askCreateFolder(focusedPane)}
         onRefresh={() => focusedDir.reload()}
-        onDelete={() => focusedSelection && askDelete(focusedPane, focusedSelection)}
+        onDelete={() => askDelete(focusedPane, focusedSelections)}
         onInspect={() => focusedSelection && setInspectedEntry(focusedSelection)}
+        onToggleTerminal={() => setTerminalOpen((open) => !open)}
         onToggleBookmarks={() => setBookmarksOpen((open) => !open)}
         onQueryChange={setQuery}
       />
@@ -467,16 +395,23 @@ function App({ onReady }: { onReady?: () => void }) {
             focusedPane={focusedPane}
             selection={selection}
             onFocusPane={focusPane}
-            onSelect={(pane, entry) => {
+            onSelect={(pane, names, primary) => {
               focusPane(pane)
-              setSelection((current) => ({ ...current, [pane]: entry.name }))
-              if (inspectedEntry && entry.kind === 'file') setInspectedEntry(entry)
+              setSelection((current) => ({ ...current, [pane]: names }))
+              if (inspectedEntry && primary?.kind === 'file') setInspectedEntry(primary)
             }}
             onOpen={openEntry}
             onNavigate={navigate}
             onConnect={(connection) => { void openConnection(connection) }}
             onNewConnection={() => setDialog({ open: true })}
             onContextMenu={fileMenu}
+            onDropTransfer={(targetPane, names) => {
+              if (targetPane === 'remote') {
+                enqueueMany(local.entries.filter((entry) => names.includes(entry.name)), 'upload')
+              } else {
+                enqueueMany(remote.entries.filter((entry) => names.includes(entry.name)), 'download')
+              }
+            }}
           />
         </div>
         {bookmarksOpen && (
@@ -486,15 +421,8 @@ function App({ onReady }: { onReady?: () => void }) {
             currentFolder={currentFolder}
             error={bookmarksError}
             onClose={() => setBookmarksOpen(false)}
-            onAdd={async () => {
-              if (!currentFolder) return
-              const created = await api.createBookmark({ name: currentFolder.label, path: currentFolder.path, connectionId: currentFolder.connectionId })
-              setBookmarks((items) => [...items, created].sort((a, b) => a.name.localeCompare(b.name, 'tr')))
-            }}
-            onDelete={async (bookmark) => {
-              await api.deleteBookmark(bookmark.id)
-              setBookmarks((items) => items.filter((item) => item.id !== bookmark.id))
-            }}
+            onAdd={async () => { if (currentFolder) await addBookmark(currentFolder) }}
+            onDelete={deleteBookmark}
             onSelect={(bookmark) => {
               setBookmarksOpen(false)
               if (bookmark.connectionId === null) {
@@ -509,18 +437,22 @@ function App({ onReady }: { onReady?: () => void }) {
         )}
         <FileInspector entry={inspectedEntry} onClose={() => setInspectedEntry(null)} />
       </div>
+      {terminalOpen && canTerminal && activeConnection && (
+        <TerminalDrawer connection={activeConnection} theme={theme} onClose={() => setTerminalOpen(false)} />
+      )}
       <TransferQueue
         items={transfers}
         open={queueOpen}
         onToggle={() => setQueueOpen((open) => !open)}
-        onRetry={(id, overwrite) => setTransfers((items) => items.map((item) => item.id === id ? { ...item, status: 'queued', overwrite: overwrite ?? item.overwrite, error: undefined, errorCode: undefined } : item))}
-        onRemove={(id) => setTransfers((items) => items.filter((item) => item.id !== id))}
-        onClearFinished={() => setTransfers((items) => items.filter((item) => item.status !== 'completed' && item.status !== 'cancelled'))}
+        onRetry={retryTransfer}
+        onCancel={cancelTransfer}
+        onRemove={removeTransfer}
+        onClearFinished={clearFinished}
       />
       <StatusBar
         itemCount={focusedPane === 'local' ? visibleLocal.length : visibleRemote.length}
-        selectedCount={focusedSelection ? 1 : 0}
-        selectedSize={focusedSelection?.kind === 'file' ? focusedSelection.size : null}
+        selectedCount={focusedSelections.length}
+        selectedSize={selectedFilesSize}
         activeTransfer={activeTransfer?.name ?? null}
         connection={isConnected ? activeConnection : null}
       />
@@ -533,6 +465,17 @@ function App({ onReady }: { onReady?: () => void }) {
         />
       )}
       {confirm && <ConfirmDialog title={confirm.title} message={confirm.message} confirmLabel={confirm.confirmLabel} onConfirm={confirm.action} onClose={() => setConfirm(null)} />}
+      {prompt && (
+        <PromptDialog
+          title={prompt.title}
+          label={prompt.label}
+          initialValue={prompt.initialValue}
+          confirmLabel={prompt.confirmLabel}
+          placeholder={prompt.placeholder}
+          onConfirm={prompt.action}
+          onClose={() => setPrompt(null)}
+        />
+      )}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
     </div>
   )

@@ -20,14 +20,15 @@ type FileManagerViewProps = {
   connection: ConnectionProfile | null
   connectionStatus: ConnectionStatus
   focusedPane: PaneId
-  selection: Record<PaneId, string | null>
+  selection: Record<PaneId, string[]>
   onFocusPane: (pane: PaneId) => void
-  onSelect: (pane: PaneId, entry: FileEntry) => void
+  onSelect: (pane: PaneId, names: string[], primary?: FileEntry) => void
   onOpen: (pane: PaneId, entry: FileEntry) => void
   onNavigate: (pane: PaneId, path: string) => void
   onConnect: (connection: ConnectionProfile) => void
   onNewConnection: () => void
   onContextMenu: (pane: PaneId, entry: FileEntry, event: MouseEvent) => void
+  onDropTransfer?: (targetPane: PaneId, names: string[]) => void
 }
 
 const MIN_FRACTION = 0.25
@@ -39,7 +40,7 @@ const MAX_FRACTION = 0.75
  * ve seçim tonu (bg-selected / bg-selected-inactive) söyler.
  */
 export function FileManagerView(props: FileManagerViewProps) {
-  const { local, remote, connection, connectionStatus, focusedPane, selection, onFocusPane, onSelect, onOpen, onNavigate, onConnect, onNewConnection, onContextMenu } = props
+  const { local, remote, connection, connectionStatus, focusedPane, selection, onFocusPane, onSelect, onOpen, onNavigate, onConnect, onNewConnection, onContextMenu, onDropTransfer } = props
   const [fraction, setFraction] = useState(0.5)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -79,10 +80,11 @@ export function FileManagerView(props: FileManagerViewProps) {
           </div>
         )}
         <FileTable
+          pane={pane}
           label={label}
           entries={data.visibleEntries}
           selected={selection[pane]}
-          onSelect={(entry) => onSelect(pane, entry)}
+          onSelect={(names, primary) => onSelect(pane, names, primary)}
           onOpen={(entry) => onOpen(pane, entry)}
           onOpenParent={data.parent ? () => onNavigate(pane, data.parent as string) : undefined}
           onContextMenu={(entry, event) => onContextMenu(pane, entry, event)}
@@ -125,6 +127,19 @@ export function FileManagerView(props: FileManagerViewProps) {
         aria-busy={local.loading}
         onFocusCapture={() => onFocusPane('local')}
         onMouseDown={() => onFocusPane('local')}
+        onDragOver={(event) => {
+          if (event.dataTransfer.types.includes('application/x-cybergoose-transfer')) event.preventDefault()
+        }}
+        onDrop={(event) => {
+          const raw = event.dataTransfer.getData('application/x-cybergoose-transfer')
+          if (!raw) return
+          try {
+            const payload = JSON.parse(raw) as { source: PaneId; names: string[] }
+            if (payload.source === 'remote' && payload.names.length) onDropTransfer?.('local', payload.names)
+          } catch {
+            // Geçersiz sürükleme verisi yoksayılır.
+          }
+        }}
       >
         <PathBar
           tag={<ProtocolTag local />}
@@ -160,6 +175,20 @@ export function FileManagerView(props: FileManagerViewProps) {
         aria-busy={remote.loading}
         onFocusCapture={() => onFocusPane('remote')}
         onMouseDown={() => onFocusPane('remote')}
+        onDragOver={(event) => {
+          if (connectionStatus === 'connected' && event.dataTransfer.types.includes('application/x-cybergoose-transfer')) event.preventDefault()
+        }}
+        onDrop={(event) => {
+          if (connectionStatus !== 'connected') return
+          const raw = event.dataTransfer.getData('application/x-cybergoose-transfer')
+          if (!raw) return
+          try {
+            const payload = JSON.parse(raw) as { source: PaneId; names: string[] }
+            if (payload.source === 'local' && payload.names.length) onDropTransfer?.('remote', payload.names)
+          } catch {
+            // Geçersiz sürükleme verisi yoksayılır.
+          }
+        }}
       >
         <PathBar
           tag={<ProtocolTag connection={connection} status={connectionStatus} />}

@@ -12,6 +12,7 @@ const protocols: { type: ConnectionType; disabled?: boolean }[] = [
   { type: 'SFTP' },
   { type: 'Dropbox' },
   { type: 'GoogleDrive' },
+  { type: 'OneDrive' },
 ]
 
 type FieldErrors = Partial<Record<keyof ConnectionFormValues, string>>
@@ -72,7 +73,8 @@ export function ConnectionModal({ initial, onSave, onConnect, onClose }: Connect
       if (!values.host.trim()) next.host = 'Sunucu gerekli.'
       if (!/^\d+$/.test(values.port) || Number(values.port) < 1 || Number(values.port) > 65535) next.port = '1–65535'
       if (!values.username.trim()) next.username = 'Kullanıcı adı gerekli.'
-      if (forConnect && !values.password && !storedPassword) next.password = 'Bağlanmak için parolayı girin.'
+      const hasKey = values.type === 'SFTP' && Boolean(values.keyPath?.trim())
+      if (forConnect && !values.password && !storedPassword && !hasKey) next.password = 'Bağlanmak için parolayı girin.'
     }
     setErrors(next)
     return Object.keys(next).length === 0
@@ -164,6 +166,11 @@ export function ConnectionModal({ initial, onSave, onConnect, onClose }: Connect
             <Field label="Parola" error={errors.password} wide>
               {(id, describedBy) => <input id={id} aria-describedby={describedBy} type="password" className={`cg-input ${errors.password ? 'is-error' : ''}`} value={values.password} onChange={(event) => update('password', event.target.value)} autoComplete="current-password" placeholder={storedPassword ? 'Kayıtlı parola kullanılacak' : undefined} />}
             </Field>
+            {values.type === 'SFTP' && (
+              <Field label="Özel anahtar yolu (isteğe bağlı)" error={errors.keyPath} wide>
+                {(id, describedBy) => <input id={id} aria-describedby={describedBy} className="cg-input mono" value={values.keyPath ?? ''} onChange={(event) => update('keyPath', event.target.value)} placeholder="C:\Users\...\id_ed25519" spellCheck={false} />}
+              </Field>
+            )}
             {values.type === 'FTP' && (
               <div className="wide">
                 <Notice title="Düz FTP şifrelenmez.">Parola ve dosyalar ağda açık metin olarak gider. Mümkünse SFTP kullanın.</Notice>
@@ -190,6 +197,7 @@ export function ConnectionModal({ initial, onSave, onConnect, onClose }: Connect
 function protocolLabelName(type: ConnectionType): string {
   if (type === 'Dropbox') return 'Dropbox'
   if (type === 'GoogleDrive') return 'Google Drive'
+  if (type === 'OneDrive') return 'OneDrive'
   return type
 }
 

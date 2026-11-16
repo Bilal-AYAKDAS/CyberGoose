@@ -88,16 +88,35 @@ describe('CyberGoose application window', () => {
   it('downloads a remote file through the transfer API', async () => {
     const user = userEvent.setup()
     vi.spyOn(api, 'connect').mockResolvedValue({ connected: true, type: 'SFTP' })
-    const transfer = vi.spyOn(api, 'transfer').mockResolvedValue({ name: 'readme.txt', size: 379, to: 'C:/Users/bilal/readme.txt' })
+    const startTransfer = vi.spyOn(api, 'startTransfer').mockResolvedValue({
+      id: 'job-1',
+      status: 'completed',
+      transferred: 379,
+      total: 379,
+      result: { name: 'readme.txt', size: 379, to: 'C:/Users/bilal/readme.txt' },
+    })
     render(<App />)
     await screen.findByText('rapor.pdf')
     await user.click(await screen.findByRole('button', { name: /Rebex test/ }))
     const table = await screen.findByRole('table', { name: 'Rebex test dosyaları' })
     await user.click(await within(table).findByText('readme.txt'))
     await user.click(screen.getByRole('button', { name: 'İndir' }))
-    await waitFor(() => expect(transfer).toHaveBeenCalledWith(expect.objectContaining({ direction: 'download', name: 'readme.txt', localDir: 'C:/Users/bilal', remoteDir: '/' })))
+    await waitFor(() => expect(startTransfer).toHaveBeenCalledWith(expect.objectContaining({ direction: 'download', name: 'readme.txt', localDir: 'C:/Users/bilal', remoteDir: '/' })))
     const queue = screen.getByRole('region', { name: 'Transfer kuyruğu' })
     expect(await within(queue).findByText(/Tamamlandı/)).toBeInTheDocument()
+  })
+
+  it('supports multi-select with Ctrl+Click and updates selection count', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    const table = await screen.findByRole('table', { name: 'Yerel dosyalar' })
+    const folderRow = (await within(table).findByText('Belgeler')).closest('tr')!
+    const fileRow = (await within(table).findByText('rapor.pdf')).closest('tr')!
+    await user.click(folderRow)
+    await user.keyboard('{Control>}')
+    await user.click(fileRow)
+    await user.keyboard('{/Control}')
+    expect(screen.getByText(/2 öğe · 2 seçili/)).toBeInTheDocument()
   })
 
   it('switches between Graphite and Paper themes', async () => {

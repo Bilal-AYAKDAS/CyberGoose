@@ -1,5 +1,5 @@
-import { useMemo, useState, type KeyboardEvent, type MouseEvent } from 'react'
-import type { FileEntry } from '../types'
+import { useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import type { FileEntry, PaneId } from '../types'
 import { formatDate, formatFileSize } from '../utils/formatters'
 import { Icon } from './Icon'
 
@@ -7,10 +7,11 @@ type SortKey = 'name' | 'size' | 'modified'
 type SortState = { key: SortKey; direction: 'asc' | 'desc' }
 
 type FileTableProps = {
+  pane?: PaneId
   label: string
   entries: FileEntry[]
-  selected: string | null
-  onSelect: (entry: FileEntry) => void
+  selected: string[]
+  onSelect: (names: string[], primary?: FileEntry) => void
   /** Çift tık veya Enter: klasöre gir / dosya detaylarını aç. */
   onOpen: (entry: FileEntry) => void
   /** Varsa listenin başında `..` satırı gösterilir. */
@@ -37,8 +38,9 @@ function compare(a: FileEntry, b: FileEntry, key: SortKey): number {
  * Ad sans; boyut ve tarih mono, text-muted, tabular. Klasörler önce listelenir.
  * Sıralama yalnızca aktif sütunda text-accent bir okla gösterilir.
  */
-export function FileTable({ label, entries, selected, onSelect, onOpen, onOpenParent, onContextMenu, emptyText = 'Bu klasör boş' }: FileTableProps) {
+export function FileTable({ pane, label, entries, selected, onSelect, onOpen, onOpenParent, onContextMenu, emptyText = 'Bu klasör boş' }: FileTableProps) {
   const [sort, setSort] = useState<SortState>({ key: 'name', direction: 'asc' })
+  const anchorRef = useRef<string | null>(null)
 
   const sorted = useMemo(() => {
     const factor = sort.direction === 'asc' ? 1 : -1
@@ -54,7 +56,34 @@ export function FileTable({ label, entries, selected, onSelect, onOpen, onOpenPa
       : { key, direction: 'asc' })
   }
 
+  const handleRowClick = (entry: FileEntry, event: MouseEvent<HTMLTableRowElement>) => {
+    if (event.shiftKey && anchorRef.current) {
+      const start = sorted.findIndex((item) => item.name === anchorRef.current)
+      const end = sorted.findIndex((item) => item.name === entry.name)
+      if (start !== -1 && end !== -1) {
+        const [lo, hi] = start <= end ? [start, end] : [end, start]
+        onSelect(sorted.slice(lo, hi + 1).map((item) => item.name), entry)
+        return
+      }
+    }
+    if (event.ctrlKey || event.metaKey) {
+      anchorRef.current = entry.name
+      const next = selected.includes(entry.name)
+        ? selected.filter((name) => name !== entry.name)
+        : [...selected, entry.name]
+      onSelect(next, entry)
+      return
+    }
+    anchorRef.current = entry.name
+    onSelect([entry.name], entry)
+  }
+
   const handleKey = (event: KeyboardEvent<HTMLTableRowElement>, index: number) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+      event.preventDefault()
+      onSelect(sorted.map((item) => item.name))
+      return
+    }
     if (event.key === 'Enter') {
       onOpen(sorted[index])
       return
@@ -68,7 +97,8 @@ export function FileTable({ label, entries, selected, onSelect, onOpen, onOpenPa
     event.preventDefault()
     const next = sorted[index + (event.key === 'ArrowDown' ? 1 : -1)]
     if (!next) return
-    onSelect(next)
+    anchorRef.current = next.name
+    onSelect([next.name], next)
     const rows = event.currentTarget.parentElement?.querySelectorAll<HTMLElement>('tr[data-entry]')
     rows?.[index + (event.key === 'ArrowDown' ? 1 : -1)]?.focus()
   }
@@ -81,7 +111,8 @@ export function FileTable({ label, entries, selected, onSelect, onOpen, onOpenPa
     )
   }
 
-  const focusIndex = Math.max(0, sorted.findIndex((entry) => entry.name === selected))
+  const primarySelected = selected.at(-1) ?? null
+  const focusIndex = Math.max(0, sorted.findIndex((entry) => entry.name === primarySelected))
 
   return (
     <div className="cg-list-scroll">
@@ -115,7 +146,7 @@ export function FileTable({ label, entries, selected, onSelect, onOpen, onOpenPa
             </tr>
           )}
           {sorted.map((entry, index) => {
-            const isSelected = selected === entry.name
+            const isSelected = selected.includes(entry.name)
             return (
               <tr
                 key={entry.path}
@@ -123,9 +154,22 @@ export function FileTable({ label, entries, selected, onSelect, onOpen, onOpenPa
                 aria-selected={isSelected}
                 data-entry
                 tabIndex={index === focusIndex ? 0 : -1}
-                onClick={() => onSelect(entry)}
+                draggable={Boolean(pane && entry.kind === 'file')}
+                onDragStart={pane ? (event) => {
+                  const names = isSelected ? selected : [entry.name]
+                  event.dataTransfer.setData('application/x-cybergoose-transfer', JSON.stringify({ source: pane, names }))
+                  event.dataTransfer.effectAllowed = 'copy'
+                } : undefined}
+                onClick={(event) => handleRowClick(entry, event)}
                 onDoubleClick={() => onOpen(entry)}
-                onContextMenu={onContextMenu ? (event) => { event.preventDefault(); onSelect(entry); onContextMenu(entry, event) } : undefined}
+                onContextMenu={onContextMenu ? (event) => {
+                  event.preventDefault()
+                  if (!isSelected) {
+                    anchorRef.current = entry.name
+                    onSelect([entry.name], entry)
+                  }
+                  onContextMenu(entry, event)
+                } : undefined}
                 onKeyDown={(event) => handleKey(event, index)}
               >
                 <td>

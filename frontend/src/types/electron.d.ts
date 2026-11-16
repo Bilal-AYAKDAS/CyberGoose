@@ -9,6 +9,7 @@ declare global {
       setTheme?: (theme: 'dark' | 'light') => void
       /** Yerel API hazır olunca adresi ve istek anahtarı; başlatılamazsa reddedilir. */
       backend?: () => Promise<{ base: string; token: string }>
+      launchRdp?: (host: string, port?: number) => Promise<void>
     }
   }
 }

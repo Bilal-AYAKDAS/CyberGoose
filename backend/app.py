@@ -1,40 +1,34 @@
 """CyberGoose yerel API'si (React + Electron arayüzü için).
 
 Tüm hatalar `{"error": str, "code"?: str}` gövdesi ve uygun HTTP durum koduyla döner.
-Uzak bağlantı şimdilik süreç başına tektir (`state.connection`); oturum bazlı
-ConnectionManager roadmap'te.
+İş mantığı `services/` ve `file_service.py` katmanlarındadır; bu modül yalnızca HTTP yönlendirme yapar.
 """
-import threading
-from dataclasses import dataclass
-
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from flask_sock import Sock
 
 import file_service as files
 import os_folder
 from config import API_TOKEN, FLASK_DEBUG, FLASK_HOST, FLASK_PORT
 from db import DbMyFtp
+from services.session_manager import CLOUD_TYPES, SERVER_TYPES, SessionManager
+from services.terminal_manager import TerminalManager
+from services.transfer_manager import TransferManager
 
 app = Flask(__name__)
+sock = Sock(app)
 # Yalnızca Vite geliştirme sunucusu ve paketlenmiş Electron (file:// → "null" origin).
 CORS(app, origins=["http://localhost:5173", "http://127.0.0.1:5173", "null"], allow_headers=["Content-Type", "X-CyberGoose-Token"])
 
 db = DbMyFtp()
+sessions = SessionManager()
+transfers = TransferManager(sessions)
+terminals = TerminalManager(sessions)
 
-SERVER_TYPES = {"ftp": "FTP", "ftps": "FTPS", "sftp": "SFTP"}
-CLOUD_TYPES = {"dropbox": "Dropbox", "googledrive": "GoogleDrive"}
-
-
-@dataclass
-class ConnectionState:
-    connection: object = None
-    type: str | None = None
-    connection_id: str | None = None
-    pending_dropbox: object = None
-
-
-state = ConnectionState()
-state_lock = threading.Lock()
+# Test ve geriye dönük uyumluluk için takma adlar
+state = sessions.state
+state_lock = sessions.lock
+_close_current = sessions.close_current
 
 
 def error(message, status=400, code=None):
@@ -59,7 +53,8 @@ def handle_file_error(exc):
 
 @app.before_request
 def require_json():
-    if API_TOKEN and request.method != "OPTIONS" and request.headers.get("X-CyberGoose-Token") != API_TOKEN:
+    token = request.headers.get("X-CyberGoose-Token") or request.args.get("token")
+    if API_TOKEN and request.method != "OPTIONS" and token != API_TOKEN:
         return error("Yetkisiz istek", 401, "unauthorized")
     if request.method in ("POST", "PUT") and not request.is_json:
         return error('İçerik tipi "application/json" olmalı', 415)
@@ -75,65 +70,17 @@ def health():
 
 @app.get("/api/session")
 def session():
-    return jsonify({
-        "connected": state.connection is not None,
-        "type": state.type,
-        "connectionId": state.connection_id,
-    })
+    return jsonify(sessions.session_info())
 
 
-def _close_current():
-    if state.connection is not None and hasattr(state.connection, "close"):
-        try:
-            state.connection.close()
-        except Exception:
-            app.logger.exception("Önceki bağlantı kapatılamadı")
-    state.connection, state.type, state.connection_id = None, None, None
-
-
-def _connect_server(conn_type, host, port, username, password):
-    if not (host and port and username and password):
-        raise files.FileServiceError("Sunucu, port, kullanıcı adı ve parola gerekli", 400, "missing_fields")
-    try:
-        port_number = int(port)
-    except (TypeError, ValueError):
-        raise files.FileServiceError("Port sayı olmalı", 400)
-    if not 1 <= port_number <= 65535:
-        raise files.FileServiceError("Port 1-65535 arasında olmalı", 400)
-    try:
-        if conn_type == "FTP":
-            from providers.ftp import FTPOperations
-            return FTPOperations(host, port_number, username, password)
-        if conn_type == "FTPS":
-            from providers.ftp import FTPOperations
-            return FTPOperations(host, port_number, username, password, tls=True)
-        from providers.sftp import SFTPOperations
-        return SFTPOperations(host, port_number, username, password)
-    except Exception as exc:
-        app.logger.warning("%s bağlantısı kurulamadı: %s", conn_type, type(exc).__name__)
-        raise files.FileServiceError(
-            f"{host} bağlantısı kurulamadı. Sunucu, port ve parolayı kontrol edin.", 502, type(exc).__name__
-        ) from exc
-
-
-def _connect_dropbox():
-    """Dropbox OAuth tarayıcıda tamamlanır. İzin bekleniyorsa 202 + pending döner."""
-    from providers.dropbox_oauth import DropboxOperations
-
-    pending = state.pending_dropbox
-    if pending is not None and getattr(pending, "dbx", None) is not None:
-        state.pending_dropbox = None
-        return pending
-    if pending is not None:
-        return None
-    try:
-        connection = DropboxOperations()
-    except Exception as exc:
-        raise files.FileServiceError("Dropbox bağlantısı başlatılamadı. .env ayarlarını kontrol edin.", 502, type(exc).__name__) from exc
-    if getattr(connection, "dbx", None) is None:
-        state.pending_dropbox = connection
-        return None
-    return connection
+@app.put("/api/session")
+def update_session():
+    connection_id = body().get("connectionId")
+    with sessions.lock:
+        if sessions.state.connection is None:
+            return error("Aktif bağlantı yok", 409, "not_connected")
+        sessions.state.connection_id = None if connection_id is None else str(connection_id)
+    return jsonify(sessions.session_info())
 
 
 @app.post("/api/connect")
@@ -143,6 +90,7 @@ def connect():
     normalized = raw_type.lower()
     connection_id = data.get("connectionId")
     host, port, username, password = data.get("host"), data.get("port"), data.get("username"), data.get("password")
+    key_path = str(data.get("keyPath") or "").strip() or None
 
     if connection_id is not None and normalized not in CLOUD_TYPES:
         saved = db.get_connection_secret(connection_id)
@@ -151,41 +99,39 @@ def connect():
         normalized = str(saved["type"] or "").lower()
         host, port, username = saved["host"], saved["port"], saved["username"]
         password = password or saved["password"]
-        if not password:
+        if not password and not (normalized == "sftp" and key_path):
             return error("Bu bağlantı için parola kayıtlı değil", 400, "password_required")
 
-    with state_lock:
+    with sessions.lock:
         if normalized in SERVER_TYPES:
-            connection = _connect_server(SERVER_TYPES[normalized], host, port, username, password)
             conn_type = SERVER_TYPES[normalized]
+            connection = sessions.connect_server(conn_type, host, port, username, password, key_path=key_path)
         elif normalized == "dropbox":
-            connection = _connect_dropbox()
             conn_type = "Dropbox"
+            connection = sessions.connect_dropbox()
             if connection is None:
                 return jsonify({
                     "pending": True,
                     "message": "Tarayıcıda Dropbox iznini verin, sonra yeniden Bağlan'a basın.",
                 }), 202
         elif normalized == "googledrive":
-            try:
-                from providers.google_drive import DriveService
-                connection = DriveService()
-            except Exception as exc:
-                raise files.FileServiceError("Google Drive bağlantısı kurulamadı. credentials.json dosyasını kontrol edin.", 502, type(exc).__name__) from exc
             conn_type = "GoogleDrive"
+            connection = sessions.connect_googledrive()
+        elif normalized == "onedrive":
+            conn_type = "OneDrive"
+            connection = sessions.connect_onedrive()
         else:
             return error(f"Desteklenmeyen bağlantı türü: {raw_type or '-'}", 400)
 
-        _close_current()
-        state.connection, state.type = connection, conn_type
-        state.connection_id = str(connection_id) if connection_id is not None else data.get("clientId")
+        resolved_id = str(connection_id) if connection_id is not None else data.get("clientId")
+        sessions.activate(connection, conn_type, resolved_id)
     return jsonify({"connected": True, "type": conn_type})
 
 
 @app.post("/api/disconnect")
 def disconnect():
-    with state_lock:
-        _close_current()
+    with sessions.lock:
+        sessions.close_current()
     return jsonify({"connected": False})
 
 
@@ -220,42 +166,101 @@ def local_info():
 
 @app.post("/api/remote/list")
 def remote_list():
-    return jsonify(files.list_remote(state.connection, body().get("path")))
+    with sessions.lock:
+        return jsonify(files.list_remote(sessions.state.connection, body().get("path")))
 
 
 @app.post("/api/remote/info")
 def remote_info():
-    return jsonify(files.remote_details(state.connection, body().get("path")))
+    with sessions.lock:
+        return jsonify(files.remote_details(sessions.state.connection, body().get("path")))
 
 
 @app.post("/api/remote/chmod")
 def remote_chmod():
     data = body()
-    files.chmod_remote(state.connection, data.get("path"), data.get("mode"))
-    return jsonify(files.remote_details(state.connection, data.get("path")))
+    with sessions.lock:
+        files.chmod_remote(sessions.state.connection, data.get("path"), data.get("mode"))
+        return jsonify(files.remote_details(sessions.state.connection, data.get("path")))
 
 
-# ---------------------------------------------------------------- aktarım ve silme
+# ---------------------------------------------------------------- aktarım ve dosya işlemleri
 
-@app.post("/api/transfer")
-def transfer():
-    """Senkron aktarım: yanıt aktarım bitince döner. İlerleme/iptal için job API roadmap'te."""
+@app.post("/api/transfers")
+def start_transfer():
     data = body()
-    direction = data.get("direction")
-    name = data.get("name")
-    local_dir = data.get("localDir")
-    remote_dir = data.get("remoteDir")
+    direction, name = data.get("direction"), data.get("name")
+    local_dir, remote_dir = data.get("localDir"), data.get("remoteDir")
     overwrite = bool(data.get("overwrite"))
     if not (name and local_dir and remote_dir):
         return error("Dosya adı, yerel ve uzak klasör gerekli", 400)
-    with state_lock:
+    if direction not in ("upload", "download"):
+        return error("Yön 'upload' veya 'download' olmalı", 400)
+    job = transfers.start(direction, name, local_dir, remote_dir, overwrite)
+    return jsonify(job.to_dict()), 202
+
+
+@app.get("/api/transfers/<job_id>")
+def get_transfer(job_id):
+    job = transfers.get(job_id)
+    if not job:
+        return error("Aktarım işi bulunamadı", 404)
+    return jsonify(job.to_dict())
+
+
+@app.post("/api/transfers/<job_id>/cancel")
+def cancel_transfer(job_id):
+    job = transfers.cancel(job_id)
+    if not job:
+        return error("Aktarım işi bulunamadı", 404)
+    return jsonify(job.to_dict())
+
+
+@app.post("/api/transfer")
+def transfer():
+    """Senkron aktarım (geriye dönük uyumluluk)."""
+    data = body()
+    direction, name = data.get("direction"), data.get("name")
+    local_dir, remote_dir = data.get("localDir"), data.get("remoteDir")
+    overwrite = bool(data.get("overwrite"))
+    if not (name and local_dir and remote_dir):
+        return error("Dosya adı, yerel ve uzak klasör gerekli", 400)
+    with sessions.lock:
         if direction == "upload":
-            result = files.upload(state.connection, local_dir, name, remote_dir, overwrite)
+            result = files.upload(sessions.state.connection, local_dir, name, remote_dir, overwrite)
         elif direction == "download":
-            result = files.download(state.connection, remote_dir, name, local_dir, overwrite)
+            result = files.download(sessions.state.connection, remote_dir, name, local_dir, overwrite)
         else:
             return error("Yön 'upload' veya 'download' olmalı", 400)
     return jsonify(result)
+
+
+@app.post("/api/mkdir")
+def mkdir():
+    data = body()
+    side, path, name = data.get("side"), data.get("path"), str(data.get("name") or "")
+    if not (path and name.strip()):
+        return error("Üst klasör yolu ve yeni klasör adı gerekli", 400)
+    if side == "local":
+        return jsonify(files.create_local_folder(path, name)), 201
+    if side == "remote":
+        with sessions.lock:
+            return jsonify(files.create_remote_folder(sessions.state.connection, path, name)), 201
+    return error("Taraf 'local' veya 'remote' olmalı", 400)
+
+
+@app.post("/api/rename")
+def rename():
+    data = body()
+    side, path, name = data.get("side"), data.get("path"), str(data.get("name") or "")
+    if not (path and name.strip()):
+        return error("Yol ve yeni ad gerekli", 400)
+    if side == "local":
+        return jsonify(files.rename_local(path, name))
+    if side == "remote":
+        with sessions.lock:
+            return jsonify(files.rename_remote(sessions.state.connection, path, name))
+    return error("Taraf 'local' veya 'remote' olmalı", 400)
 
 
 @app.post("/api/delete")
@@ -267,8 +272,8 @@ def delete():
     if side == "local":
         files.delete_local(path)
     elif side == "remote":
-        with state_lock:
-            files.delete_remote(state.connection, path)
+        with sessions.lock:
+            files.delete_remote(sessions.state.connection, path)
     else:
         return error("Taraf 'local' veya 'remote' olmalı", 400)
     return jsonify({"deleted": path})
@@ -279,7 +284,7 @@ def delete():
 def _connection_fields(data):
     conn_type = SERVER_TYPES.get(str(data.get("type") or "").lower())
     if not conn_type:
-        raise files.FileServiceError("Yalnızca FTP ve SFTP bağlantıları kaydedilebilir", 400)
+        raise files.FileServiceError("Yalnızca FTP, FTPS ve SFTP bağlantıları kaydedilebilir", 400)
     name, host, username = (str(data.get(key) or "").strip() for key in ("name", "host", "username"))
     port = str(data.get("port") or "").strip()
     if not (name and host and port and username):
@@ -296,14 +301,18 @@ def list_connections():
 
 @app.post("/api/connections")
 def create_connection():
-    connection_id = db.insert_connection(*_connection_fields(body()))
+    data = body()
+    password = data.get("password") or None
+    connection_id = db.insert_connection(*_connection_fields(data), password=password)
     created = next(item for item in db.list_connections() if item["id"] == connection_id)
     return jsonify(created), 201
 
 
 @app.put("/api/connections/<int:connection_id>")
 def update_connection(connection_id):
-    if not db.update_connection(connection_id, *_connection_fields(body())):
+    data = body()
+    password = data.get("password") or None
+    if not db.update_connection(connection_id, *_connection_fields(data), password=password):
         return error("Kayıtlı bağlantı bulunamadı", 404)
     return jsonify(next(item for item in db.list_connections() if item["id"] == connection_id))
 
@@ -338,6 +347,29 @@ def delete_bookmark(bookmark_id):
     if not db.delete_folder_bookmark(bookmark_id):
         return error("Yer imi bulunamadı", 404)
     return jsonify({"deleted": bookmark_id})
+
+
+# ---------------------------------------------------------------- ssh terminal (PuTTY benzeri)
+
+@app.post("/api/terminal/open")
+def open_terminal():
+    data = body()
+    cols = int(data.get("cols") or 80)
+    rows = int(data.get("rows") or 24)
+    term = terminals.open_from_session(cols=cols, rows=rows)
+    return jsonify({"id": term.id}), 201
+
+
+@app.delete("/api/terminal/<terminal_id>")
+def close_terminal(terminal_id):
+    if not terminals.close(terminal_id):
+        return error("Terminal oturumu bulunamadı", 404)
+    return jsonify({"closed": terminal_id})
+
+
+@sock.route("/ws/terminal/<terminal_id>")
+def terminal_ws(ws, terminal_id):
+    terminals.attach_websocket(ws, terminal_id)
 
 
 def main():

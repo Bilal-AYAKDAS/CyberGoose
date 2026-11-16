@@ -21,13 +21,12 @@ type InspectionState = {
 export function FileInspector({ entry, onClose }: FileInspectorProps) {
   const [inspection, setInspection] = useState<InspectionState | null>(null)
   const [mode, setMode] = useState('')
-  const [chmodState, setChmodState] = useState<{ busy: boolean; error?: string; done?: boolean }>({ busy: false })
+  const [chmodState, setChmodState] = useState<{ path: string; busy: boolean; error?: string; done?: boolean }>({ path: '', busy: false })
 
   useEffect(() => {
     if (!entry || entry.kind === 'folder') return
     const path = entry.path
     let active = true
-    setChmodState({ busy: false })
     const request: Promise<InspectionState> = entry.source === 'local'
       ? api.getLocalFileInfo(path).then((local) => ({ path, local }))
       : api.getRemoteDetails(path).then((remote) => ({ path, remote }))
@@ -44,6 +43,7 @@ export function FileInspector({ entry, onClose }: FileInspectorProps) {
   }, [entry])
 
   if (!entry) return null
+  const activeChmod = chmodState.path === entry.path ? chmodState : { path: entry.path, busy: false }
   const current = inspection?.path === entry.path ? inspection : null
   const local = current?.local
   const remote = current?.remote
@@ -54,13 +54,13 @@ export function FileInspector({ entry, onClose }: FileInspectorProps) {
   const preview = local?.preview
 
   const applyMode = async () => {
-    setChmodState({ busy: true })
+    setChmodState({ path: entry.path, busy: true })
     try {
       const updated = await api.chmodRemote(entry.path, mode)
       setInspection({ path: entry.path, remote: updated })
-      setChmodState({ busy: false, done: true })
+      setChmodState({ path: entry.path, busy: false, done: true })
     } catch (error) {
-      setChmodState({ busy: false, error: error instanceof Error ? error.message : 'İzinler değiştirilemedi' })
+      setChmodState({ path: entry.path, busy: false, error: error instanceof Error ? error.message : 'İzinler değiştirilemedi' })
     }
   }
 
@@ -85,11 +85,11 @@ export function FileInspector({ entry, onClose }: FileInspectorProps) {
         <div className="cg-popover-section">
           <label className="cg-label" htmlFor="chmod-input">İzinleri değiştir</label>
           <div className="cg-inline">
-            <input id="chmod-input" className="cg-input mono" value={mode} maxLength={3} inputMode="numeric" onChange={(event) => { setMode(event.target.value); setChmodState({ busy: false }) }} />
-            <button className="cg-btn" disabled={chmodState.busy || !/^[0-7]{3}$/.test(mode) || mode === remote.permissions} onClick={applyMode}>Uygula</button>
+            <input id="chmod-input" className="cg-input mono" value={mode} maxLength={3} inputMode="numeric" onChange={(event) => { setMode(event.target.value); setChmodState({ path: entry.path, busy: false }) }} />
+            <button className="cg-btn" disabled={activeChmod.busy || !/^[0-7]{3}$/.test(mode) || mode === remote.permissions} onClick={applyMode}>Uygula</button>
           </div>
-          {chmodState.error && <span className="cg-help error">{chmodState.error}</span>}
-          {chmodState.done && <span className="cg-help">İzinler güncellendi.</span>}
+          {activeChmod.error && <span className="cg-help error">{activeChmod.error}</span>}
+          {activeChmod.done && <span className="cg-help">İzinler güncellendi.</span>}
         </div>
       )}
       {current?.error && (

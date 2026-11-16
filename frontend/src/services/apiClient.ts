@@ -41,6 +41,15 @@ export function apiBase(): string {
   return window.location.protocol === 'file:' ? 'http://127.0.0.1:5502' : ''
 }
 
+export function apiToken(): string {
+  return runtime?.token ?? ''
+}
+
+export function wsBase(): string {
+  const base = apiBase() || window.location.origin
+  return base.replace(/^http/, 'ws')
+}
+
 export async function apiRequest<T>(
   path: string,
   init: RequestInit = {},
@@ -76,6 +85,7 @@ export type ConnectRequest = {
   port?: string
   username?: string
   password?: string
+  keyPath?: string
   /** Kayıtlı bağlantı: parola boşsa backend kayıtlı parolayı kullanır. */
   connectionId?: string
   /** Arayüzdeki bağlantı kimliği; oturum geri yüklenirken eşlemek için. */
@@ -96,10 +106,22 @@ export type TransferRequest = {
   overwrite?: boolean
 }
 
-export type ConnectionInput = { name: string; type: ConnectionType; host: string; port: string; username: string }
+export type TransferJobStatus = {
+  id: string
+  status: 'transferring' | 'completed' | 'error' | 'cancelled'
+  transferred: number
+  total: number | null
+  error?: string | null
+  errorCode?: string | null
+  result?: { name: string; size: number; to: string } | null
+}
+
+export type ConnectionInput = { name: string; type: ConnectionType; host: string; port: string; username: string; password?: string }
 
 export const api = {
   session: () => apiRequest<SessionInfo>('/api/session'),
+  updateSession: (connectionId: string | null) =>
+    apiRequest<SessionInfo>('/api/session', { method: 'PUT', body: JSON.stringify({ connectionId }) }),
   connect: (request: ConnectRequest) => post<ConnectResponse>('/api/connect', request),
   disconnect: () => post<{ connected: false }>('/api/disconnect'),
 
@@ -112,6 +134,13 @@ export const api = {
   chmodRemote: (path: string, mode: string) => post<RemoteDetails>('/api/remote/chmod', { path, mode }),
 
   transfer: (request: TransferRequest) => post<{ name: string; size: number; to: string }>('/api/transfer', request),
+  startTransfer: (request: TransferRequest) => post<TransferJobStatus>('/api/transfers', request),
+  getTransfer: (jobId: string) => apiRequest<TransferJobStatus>(`/api/transfers/${encodeURIComponent(jobId)}`),
+  cancelTransfer: (jobId: string) => post<TransferJobStatus>(`/api/transfers/${encodeURIComponent(jobId)}/cancel`),
+  mkdir: (side: 'local' | 'remote', path: string, name: string) =>
+    post<{ name: string; path: string }>('/api/mkdir', { side, path, name }),
+  renameEntry: (side: 'local' | 'remote', path: string, name: string) =>
+    post<{ name: string; path: string }>('/api/rename', { side, path, name }),
   deleteEntry: (side: 'local' | 'remote', path: string) => post<{ deleted: string }>('/api/delete', { side, path }),
 
   listConnections: () => apiRequest<SavedConnection[]>('/api/connections'),
@@ -125,4 +154,7 @@ export const api = {
   createBookmark: (input: { name: string; path: string; connectionId: string | null }) => post<FolderBookmark>('/api/bookmarks', input),
   deleteBookmark: (id: number) =>
     apiRequest<{ deleted: number }>(`/api/bookmarks/${id}`, { method: 'DELETE' }),
+
+  openTerminal: (cols: number, rows: number) => post<{ id: string }>('/api/terminal/open', { cols, rows }),
+  closeTerminal: (id: string) => apiRequest<{ closed: string }>(`/api/terminal/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }

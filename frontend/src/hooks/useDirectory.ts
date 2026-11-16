@@ -18,37 +18,61 @@ const empty: DirectoryState = { path: null, parent: null, crumbs: [], entries: [
  * yeniden ister; yarışan isteklerde yalnızca sonuncusu uygulanır.
  */
 export function useDirectory(source: EntrySource, requestedPath: string | null, enabled: boolean) {
-  const [state, setState] = useState<DirectoryState>(empty)
   const [version, setVersion] = useState(0)
+  const requestKey = enabled ? `${source}:${requestedPath ?? ''}:${version}` : null
+  const [result, setResult] = useState<{
+    key: string
+    path: string | null
+    parent: string | null
+    crumbs: Crumb[]
+    entries: FileEntry[]
+    error: ApiError | null
+  } | null>(null)
 
   useEffect(() => {
-    if (!enabled) {
-      setState(empty)
-      return
-    }
+    if (!enabled || !requestKey) return
     let active = true
-    setState((current) => ({ ...current, loading: true, error: null }))
     const request = source === 'local' ? api.listLocal(requestedPath) : api.listRemote(requestedPath ?? '/')
     request
       .then((listing) => {
         if (!active) return
-        setState({
+        setResult({
+          key: requestKey,
           path: listing.path,
           parent: listing.parent,
           crumbs: listing.crumbs,
           entries: listing.entries.map((entry) => ({ ...entry, source })),
-          loading: false,
           error: null,
         })
       })
       .catch((error: unknown) => {
         if (!active) return
         const apiError = error instanceof ApiError ? error : new ApiError('Klasör yüklenemedi', 0)
-        setState((current) => ({ ...current, loading: false, error: apiError }))
+        setResult((current) => ({
+          key: requestKey,
+          path: current?.path ?? null,
+          parent: current?.parent ?? null,
+          crumbs: current?.crumbs ?? [],
+          entries: current?.entries ?? [],
+          error: apiError,
+        }))
       })
     return () => { active = false }
-  }, [source, requestedPath, enabled, version])
+  }, [source, requestedPath, enabled, requestKey])
 
   const reload = useCallback(() => setVersion((value) => value + 1), [])
-  return { ...state, reload }
+
+  if (!enabled) {
+    return { ...empty, reload }
+  }
+  const settled = result?.key === requestKey
+  return {
+    path: result?.path ?? null,
+    parent: result?.parent ?? null,
+    crumbs: result?.crumbs ?? [],
+    entries: result?.entries ?? [],
+    loading: !settled,
+    error: settled ? (result?.error ?? null) : null,
+    reload,
+  }
 }

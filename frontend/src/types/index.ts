@@ -40,7 +40,7 @@ export type FileInspection = {
 export type RemoteDetails = { path: string; permissions: string | null; canChmod: boolean }
 
 /** Tasarımdaki ProtocolTag sırası. */
-export type ConnectionType = 'FTP' | 'FTPS' | 'SFTP' | 'Dropbox' | 'GoogleDrive'
+export type ConnectionType = 'FTP' | 'FTPS' | 'SFTP' | 'Dropbox' | 'GoogleDrive' | 'OneDrive'
 
 export type ConnectionStatus = 'connected' | 'connecting' | 'offline' | 'error'
 
@@ -90,6 +90,8 @@ export type TransferItem = {
   /** Bayt; bilinmiyorsa null. */
   size: number | null
   status: TransferStatus
+  jobId?: string
+  transferred?: number
   overwrite?: boolean
   error?: string
   /** Teknik hata kodu; tooltip'te gösterilir. */
@@ -103,4 +105,5 @@ export type PaneId = 'local' | 'remote'
 export type ConnectionFormValues = Omit<ConnectionProfile, 'id' | 'hasPassword' | 'saved'> & {
   /** Parola yalnızca bağlantı isteğinde kullanılır, saklanmaz. */
   password: string
+  keyPath?: string
 }

@@ -8,6 +8,7 @@ type TransferQueueProps = {
   open: boolean
   onToggle: () => void
   onRetry: (id: string, overwrite?: boolean) => void
+  onCancel?: (id: string) => void
   onRemove: (id: string) => void
   onClearFinished: () => void
 }
@@ -19,12 +20,19 @@ const barTone: Partial<Record<TransferItem['status'], string>> = {
 }
 
 function progressOf(item: TransferItem): number {
-  return item.status === 'completed' ? 100 : 0
+  if (item.status === 'completed') return 100
+  if (item.status === 'transferring' && item.size && item.size > 0 && item.transferred !== undefined) {
+    return Math.min(100, Math.round((item.transferred / item.size) * 100))
+  }
+  return 0
 }
 
 function statusText(item: TransferItem): { text: string; tone: '' | 'ok' | 'error' | 'warn' } {
   switch (item.status) {
-    case 'transferring': return { text: 'Aktarılıyor', tone: '' }
+    case 'transferring': {
+      const pct = progressOf(item)
+      return { text: item.size && item.transferred !== undefined ? `Aktarılıyor · %${pct}` : 'Aktarılıyor', tone: '' }
+    }
     case 'queued': return { text: 'Sırada', tone: '' }
     case 'cancelled': return { text: 'İptal edildi', tone: 'warn' }
     case 'completed': {
@@ -39,15 +47,14 @@ function rateText(item: TransferItem): string {
   if (item.status === 'completed' && item.size && item.startedAt && item.finishedAt && item.finishedAt > item.startedAt) {
     return formatRate((item.size * 1000) / (item.finishedAt - item.startedAt))
   }
+  if (item.status === 'transferring' && item.transferred && item.startedAt) {
+    const elapsed = Date.now() - item.startedAt
+    if (elapsed > 250) return formatRate((item.transferred * 1000) / elapsed)
+  }
   return formatFileSize(item.size)
 }
 
-/**
- * Pencerenin altındaki aktarım çekmecesi. Aktarımlar sırayla, gerçek API ile yapılır.
- * Çubuk: tamamlanan = status-ok, iptal = status-warn, hata = status-error. Hata varken kapanmaz.
- * Not: Backend aktarımı tek istekte yapar; yüzde ilerleme ve iptal job API'si gelince eklenecek.
- */
-export function TransferQueue({ items, open, onToggle, onRetry, onRemove, onClearFinished }: TransferQueueProps) {
+export function TransferQueue({ items, open, onToggle, onRetry, onCancel, onRemove, onClearFinished }: TransferQueueProps) {
   const { active, queued, errors } = queueSummary(items)
   const lockedOpen = errors > 0
   const expanded = open || lockedOpen
@@ -102,7 +109,12 @@ export function TransferQueue({ items, open, onToggle, onRetry, onRemove, onClea
                   {item.status === 'error' && item.errorCode !== 'exists' && (
                     <button className="cg-btn cg-btn-ghost cg-btn-sm" onClick={() => onRetry(item.id)}>Yeniden dene</button>
                   )}
-                  {item.status !== 'transferring' && (
+                  {(item.status === 'transferring' || item.status === 'queued') && onCancel && (
+                    <button className="cg-btn cg-btn-icon cg-btn-ghost cg-btn-sm" aria-label={`${item.name} aktarımını iptal et`} title="İptal et" onClick={() => onCancel(item.id)}>
+                      <Icon name="close" />
+                    </button>
+                  )}
+                  {item.status !== 'transferring' && item.status !== 'queued' && (
                     <button className="cg-btn cg-btn-icon cg-btn-ghost cg-btn-sm" aria-label={`${item.name} aktarımını kaldır`} title="Kaldır" onClick={() => onRemove(item.id)}>
                       <Icon name="close" />
                     </button>

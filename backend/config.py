@@ -42,6 +42,9 @@ DROPBOX_TOKEN_FILE = data_path(env("DROPBOX_TOKEN_FILE", "dropboxtoken.json"))
 GOOGLE_CLIENT_SECRETS_FILE = data_path(env("GOOGLE_CLIENT_SECRETS_FILE", "credentials.json"))
 GOOGLE_TOKEN_FILE = data_path(env("GOOGLE_TOKEN_FILE", "token.json"))
 
+ONEDRIVE_CLIENT_ID = env("ONEDRIVE_CLIENT_ID", "")
+ONEDRIVE_TOKEN_FILE = data_path(env("ONEDRIVE_TOKEN_FILE", "onedrivetoken.json"))
+
 FLASK_HOST = env("FLASK_HOST", "127.0.0.1")
 FLASK_PORT = int(env("FLASK_PORT", "5502"))
 FLASK_DEBUG = env("FLASK_DEBUG", "false").lower() == "true"

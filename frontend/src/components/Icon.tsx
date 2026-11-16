@@ -25,6 +25,7 @@ const paths = {
   moon: 'M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5Z',
   info: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 11v5m0-8h.01',
   alert: 'M12 4 3 20h18L12 4Zm0 6v4m0 3h.01',
+  terminal: 'M4 17l6-5-6-5M12 19h8',
 } as const
 
 export type IconName = keyof typeof paths
