@@ -42,7 +42,6 @@ type ToolbarProps = {
   canCreateFolder: boolean
   canInspect: boolean
   canDelete: boolean
-  canTerminal?: boolean
   terminalOpen?: boolean
   query: string
   bookmarksOpen: boolean
@@ -53,7 +52,8 @@ type ToolbarProps = {
   onRefresh: () => void
   onInspect: () => void
   onDelete: () => void
-  onToggleTerminal?: () => void
+  onOpenTerminal: () => void
+  onOpenRdp: () => void
   onToggleBookmarks: () => void
   onQueryChange: (value: string) => void
 }
@@ -76,9 +76,9 @@ export function Toolbar(props: ToolbarProps) {
       <button className="cg-btn cg-btn-icon cg-btn-ghost" aria-label="Yeni klasör" title="Yeni klasör (Ctrl+Shift+N)" disabled={!props.canCreateFolder} onClick={props.onCreateFolder}><Icon name="plus" /></button>
       <button className="cg-btn cg-btn-icon cg-btn-ghost" aria-label="Sil" title="Sil (Delete)" disabled={!canDelete} onClick={props.onDelete}><Icon name="trash" /></button>
       <button className="cg-btn cg-btn-icon cg-btn-ghost" aria-label="Detaylar" title="Detaylar (Enter)" disabled={!canInspect} onClick={props.onInspect}><Icon name="info" /></button>
-      {props.canTerminal && props.onToggleTerminal && (
-        <button className="cg-btn cg-btn-icon cg-btn-ghost" aria-label="SSH Terminali" aria-pressed={props.terminalOpen} title="SSH Terminali (PuTTY)" onClick={props.onToggleTerminal}><Icon name="terminal" /></button>
-      )}
+      <span className="sep" />
+      <button className="cg-btn cg-btn-ghost" aria-label="SSH Terminali" aria-pressed={props.terminalOpen} title="SSH Terminali (PuTTY)" onClick={props.onOpenTerminal}><Icon name="terminal" />Terminal</button>
+      <button className="cg-btn cg-btn-ghost" aria-label="Uzak Masaüstü" title="Uzak Masaüstü (RDP)" onClick={props.onOpenRdp}><Icon name="monitor" />Uzak Masaüstü</button>
       <button className="cg-btn cg-btn-icon cg-btn-ghost" aria-label="Yer imleri" aria-pressed={bookmarksOpen} title="Yer imleri" onClick={props.onToggleBookmarks}><Icon name="bookmark" /></button>
       <span className="grow" />
       <label className="cg-search">

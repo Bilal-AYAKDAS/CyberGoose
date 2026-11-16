@@ -457,3 +457,27 @@ def test_ssh_terminal_open_and_close(client, monkeypatch):
     assert client.delete(f"/api/terminal/{term_id}").status_code == 200
     assert closed_channels == [True]
     assert client.delete(f"/api/terminal/{term_id}").status_code == 404
+
+
+def test_ssh_terminal_direct_connect(client, monkeypatch):
+    from types import SimpleNamespace
+    import app as backend
+
+    closed = []
+
+    class FakeChannel:
+        def close(self):
+            closed.append("channel")
+
+    class FakeConn:
+        client = SimpleNamespace(invoke_shell=lambda **_kw: FakeChannel())
+
+        def close(self):
+            closed.append("conn")
+
+    monkeypatch.setattr(backend.sessions, "connect_server", lambda *_a, **_kw: FakeConn())
+    opened = client.post("/api/terminal/connect", json={"host": "10.0.0.5", "port": "22", "username": "root", "password": "pw"})
+    assert opened.status_code == 201
+    term_id = opened.get_json()["id"]
+    assert client.delete(f"/api/terminal/{term_id}").status_code == 200
+    assert closed == ["channel", "conn"]

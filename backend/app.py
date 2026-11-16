@@ -18,7 +18,7 @@ from services.transfer_manager import TransferManager
 app = Flask(__name__)
 sock = Sock(app)
 # Yalnızca Vite geliştirme sunucusu ve paketlenmiş Electron (file:// → "null" origin).
-CORS(app, origins=["http://localhost:5173", "http://127.0.0.1:5173", "null"], allow_headers=["Content-Type", "X-CyberGoose-Token"])
+CORS(app, origins=["http://localhost:5175", "http://127.0.0.1:5175", "null"], allow_headers=["Content-Type", "X-CyberGoose-Token"])
 
 db = DbMyFtp()
 sessions = SessionManager()
@@ -357,6 +357,24 @@ def open_terminal():
     cols = int(data.get("cols") or 80)
     rows = int(data.get("rows") or 24)
     term = terminals.open_from_session(cols=cols, rows=rows)
+    return jsonify({"id": term.id}), 201
+
+
+@app.post("/api/terminal/connect")
+def connect_terminal():
+    data = body()
+    cols = int(data.get("cols") or 80)
+    rows = int(data.get("rows") or 24)
+    connection_id = data.get("connectionId")
+    host, port, username, password = data.get("host"), data.get("port") or 22, data.get("username"), data.get("password")
+    key_path = str(data.get("keyPath") or "").strip() or None
+    if connection_id is not None:
+        saved = db.get_connection_secret(connection_id)
+        if not saved:
+            return error("Kayıtlı bağlantı bulunamadı", 404)
+        host, port, username = saved["host"], saved["port"], saved["username"]
+        password = password or saved["password"]
+    term = terminals.open_direct(host, port, username, password=password, key_path=key_path, cols=cols, rows=rows)
     return jsonify({"id": term.id}), 201
 
 

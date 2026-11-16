@@ -13,6 +13,7 @@ import file_service as files
 class TerminalSession:
     id: str
     channel: object
+    owned_client: object = None
     closed: bool = False
 
 
@@ -38,6 +39,28 @@ class TerminalManager:
             self._terminals[term.id] = term
         return term
 
+    def open_direct(
+        self,
+        host: str,
+        port: int,
+        username: str,
+        password: str | None = None,
+        key_path: str | None = None,
+        cols: int = 80,
+        rows: int = 24,
+    ) -> TerminalSession:
+        conn = self._sessions.connect_server("SFTP", host, port, username, password, key_path=key_path)
+        try:
+            channel = conn.client.invoke_shell(term="xterm-256color", width=max(20, cols), height=max(5, rows))
+        except Exception as exc:
+            conn.close()
+            raise files.FileServiceError(f"SSH kabuğu açılamadı: {exc}", 502, type(exc).__name__) from exc
+
+        term = TerminalSession(id=str(uuid.uuid4()), channel=channel, owned_client=conn)
+        with self._lock:
+            self._terminals[term.id] = term
+        return term
+
     def get(self, terminal_id: str) -> TerminalSession | None:
         with self._lock:
             return self._terminals.get(terminal_id)
@@ -52,6 +75,11 @@ class TerminalManager:
             term.channel.close()
         except Exception:
             pass
+        if term.owned_client is not None:
+            try:
+                term.owned_client.close()
+            except Exception:
+                pass
         return True
 
     def attach_websocket(self, ws, terminal_id: str) -> None:

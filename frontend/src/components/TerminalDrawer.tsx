@@ -5,20 +5,28 @@ import '@xterm/xterm/css/xterm.css'
 import { api, apiToken, wsBase } from '../services/apiClient'
 import type { ConnectionProfile } from '../types'
 import { Icon } from './Icon'
+import type { DirectTerminalTarget } from './RemoteAccessModal'
 
 type TerminalDrawerProps = {
-  connection: ConnectionProfile
+  connection?: ConnectionProfile | null
+  directTarget?: DirectTerminalTarget | null
   theme: 'dark' | 'light'
   onClose: () => void
 }
 
 /**
- * PuTTY benzeri dahili SSH terminali: aktif SFTP bağlantısı üzerinden WebSocket + PTY kabuğu açar.
+ * PuTTY benzeri dahili SSH terminali: aktif SFTP oturumu veya doğrudan SSH bağlantısı üzerinden
+ * WebSocket + PTY kabuğu açar.
  */
-export function TerminalDrawer({ connection, theme, onClose }: TerminalDrawerProps) {
+export function TerminalDrawer({ connection, directTarget, theme, onClose }: TerminalDrawerProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const [status, setStatus] = useState<'connecting' | 'connected' | 'closed' | 'error'>('connecting')
   const [errorText, setErrorText] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState(false)
+
+  const targetKey = directTarget
+    ? `direct:${directTarget.host}:${directTarget.port}:${directTarget.username}:${directTarget.connectionId ?? ''}`
+    : `session:${connection?.id ?? ''}`
 
   useEffect(() => {
     const container = hostRef.current
@@ -59,7 +67,20 @@ export function TerminalDrawer({ connection, theme, onClose }: TerminalDrawerPro
       }
     })
 
-    api.openTerminal(term.cols, term.rows)
+    const openRequest = directTarget
+      ? api.connectTerminal({
+        cols: term.cols,
+        rows: term.rows,
+        connectionId: directTarget.connectionId,
+        host: directTarget.host,
+        port: directTarget.port,
+        username: directTarget.username,
+        password: directTarget.password,
+        keyPath: directTarget.keyPath,
+      })
+      : api.openTerminal(term.cols, term.rows)
+
+    openRequest
       .then(({ id }) => {
         if (disposed) {
           void api.closeTerminal(id).catch(() => undefined)
@@ -113,18 +134,23 @@ export function TerminalDrawer({ connection, theme, onClose }: TerminalDrawerPro
       if (termId) void api.closeTerminal(termId).catch(() => undefined)
       term.dispose()
     }
-  }, [connection.id, theme])
+  }, [targetKey, directTarget, theme])
 
-  const label = connection.username ? `${connection.username}@${connection.host}` : connection.host
+  const label = directTarget
+    ? directTarget.label
+    : (connection?.username ? `${connection.username}@${connection.host}` : (connection?.host ?? 'SSH'))
   const statusLabel = status === 'connected' ? 'bağlı' : status === 'connecting' ? 'bağlanıyor' : status === 'closed' ? 'kapandı' : (errorText ?? 'hata')
 
   return (
-    <section className="cg-terminal" aria-label="SSH Terminali">
+    <section className={`cg-terminal ${expanded ? 'is-expanded' : ''}`} aria-label="SSH Terminali">
       <div className="cg-terminal-head">
         <Icon name="terminal" />
         <span className="mono">{label}</span>
         <span className="cg-caption">· {statusLabel}</span>
         <span className="grow" />
+        <button className="cg-btn cg-btn-ghost cg-btn-sm" onClick={() => setExpanded((value) => !value)}>
+          {expanded ? 'Küçült' : 'Büyüt'}
+        </button>
         <button className="cg-btn cg-btn-icon cg-btn-ghost cg-btn-sm" aria-label="Terminali kapat" onClick={onClose}>
           <Icon name="close" />
         </button>

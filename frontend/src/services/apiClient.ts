@@ -156,5 +156,15 @@ export const api = {
     apiRequest<{ deleted: number }>(`/api/bookmarks/${id}`, { method: 'DELETE' }),
 
   openTerminal: (cols: number, rows: number) => post<{ id: string }>('/api/terminal/open', { cols, rows }),
+  connectTerminal: (request: {
+    cols: number
+    rows: number
+    connectionId?: string
+    host?: string
+    port?: string
+    username?: string
+    password?: string
+    keyPath?: string
+  }) => post<{ id: string }>('/api/terminal/connect', request),
   closeTerminal: (id: string) => apiRequest<{ closed: string }>(`/api/terminal/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }

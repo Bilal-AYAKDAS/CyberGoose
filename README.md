@@ -57,10 +57,10 @@ npm run dev
 Bu komut üç süreci birlikte açar:
 
 - Flask API: `127.0.0.1:5502`
-- Vite: `localhost:5173`
+- Vite: `localhost:5175`
 - Electron penceresi
 
-Ayrı ayrı çalıştırmak için `npm run dev:backend`, `npm run dev:frontend` ve `npm run dev:electron` kullanılır. Yalnızca tarayıcıda denemek için backend ve frontend'i açıp `http://localhost:5173` adresine gidin.
+Ayrı ayrı çalıştırmak için `npm run dev:backend`, `npm run dev:frontend` ve `npm run dev:electron` kullanılır. Yalnızca tarayıcıda denemek için backend ve frontend'i açıp `http://localhost:5175` adresine gidin.
 
 Ücretsiz test sunucusu: `test.rebex.net`. Kullanıcı adı `demo`, parola `password`. SFTP portu 22, FTP/FTPS portu 21. Sunucu salt okunurdur; listeleme ve indirme denenebilir.
 

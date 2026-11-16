@@ -41,4 +41,14 @@ describe('FileTable', () => {
     await user.keyboard('{Control>}a{/Control}')
     expect(onSelect).toHaveBeenLastCalledWith(['Belgeler', 'alpha.txt', 'beta.txt', 'gamma.txt'])
   })
+
+  it('supports checkbox multi-selection for folders and select-all', async () => {
+    const user = userEvent.setup()
+    const onSelect = vi.fn()
+    render(<FileTable label="Dosyalar" entries={entries} selected={['Belgeler']} onSelect={onSelect} onOpen={vi.fn()} />)
+    await user.click(screen.getByLabelText('alpha.txt seç'))
+    expect(onSelect).toHaveBeenLastCalledWith(['Belgeler', 'alpha.txt'], entries[1])
+    await user.click(screen.getByLabelText('Tümünü seç'))
+    expect(onSelect).toHaveBeenLastCalledWith(['Belgeler', 'alpha.txt', 'beta.txt', 'gamma.txt'])
+  })
 })

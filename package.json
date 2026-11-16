@@ -10,7 +10,7 @@
     "dev": "concurrently -k -n api,web,app -c yellow,cyan,magenta \"npm:dev:backend\" \"npm:dev:frontend\" \"npm:dev:electron\"",
     "dev:backend": "cross-env FLASK_DEBUG=true node scripts/python.cjs run backend/app.py",
     "dev:frontend": "npm --prefix frontend run dev",
-    "dev:electron": "wait-on http://localhost:5173 && cross-env ELECTRON_RENDERER_URL=http://localhost:5173 electron .",
+    "dev:electron": "wait-on http://localhost:5175 && cross-env ELECTRON_RENDERER_URL=http://localhost:5175 electron .",
     "start": "electron .",
     "build:frontend": "npm --prefix frontend run build",
     "build:backend": "node scripts/python.cjs run --cwd backend -m PyInstaller cybergoose-backend.spec --noconfirm --clean --distpath dist --workpath build",

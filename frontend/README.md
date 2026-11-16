@@ -3,7 +3,7 @@
 React 19 + TypeScript + Vite. Kurulum, geliştirme ve paketleme adımları kökteki [README.md](../README.md) dosyasında.
 
 ```powershell
-npm run dev        # Vite, http://localhost:5173 (/api istekleri 127.0.0.1:5502'ye gider)
+npm run dev        # Vite, http://localhost:5175 (/api istekleri 127.0.0.1:5502'ye gider)
 npm run build      # tsc + vite build, dist/
 npm run test:unit  # Vitest
 npm run lint       # oxlint

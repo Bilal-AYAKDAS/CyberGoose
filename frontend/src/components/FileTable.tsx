@@ -113,13 +113,32 @@ export function FileTable({ pane, label, entries, selected, onSelect, onOpen, on
 
   const primarySelected = selected.at(-1) ?? null
   const focusIndex = Math.max(0, sorted.findIndex((entry) => entry.name === primarySelected))
+  const allSelected = sorted.length > 0 && sorted.every((entry) => selected.includes(entry.name))
+
+  const toggleItem = (entry: FileEntry) => {
+    anchorRef.current = entry.name
+    const next = selected.includes(entry.name)
+      ? selected.filter((name) => name !== entry.name)
+      : [...selected, entry.name]
+    onSelect(next, entry)
+  }
 
   return (
     <div className="cg-list-scroll">
       <table className="cg-list" aria-label={label}>
-        <colgroup><col /><col style={{ width: 92 }} /><col style={{ width: 140 }} /></colgroup>
+        <colgroup><col style={{ width: 28 }} /><col /><col style={{ width: 92 }} /><col style={{ width: 140 }} /></colgroup>
         <thead>
           <tr>
+            <th className="cg-check-col">
+              <input
+                type="checkbox"
+                className="cg-check"
+                aria-label="Tümünü seç"
+                checked={allSelected}
+                disabled={sorted.length === 0}
+                onChange={() => onSelect(allSelected ? [] : sorted.map((item) => item.name))}
+              />
+            </th>
             {columns.map((column) => {
               const active = sort.key === column.key
               return (
@@ -140,6 +159,7 @@ export function FileTable({ pane, label, entries, selected, onSelect, onOpen, on
         <tbody>
           {onOpenParent && (
             <tr className="cg-parent-row" tabIndex={-1} onDoubleClick={onOpenParent} onKeyDown={(event) => { if (event.key === 'Enter') onOpenParent() }} aria-label="Üst klasör">
+              <td className="cg-check-col" />
               <td><span className="cg-name"><Icon name="folder" className="is-dir" /><span className="cg-name-text">..</span></span></td>
               <td className="meta num" />
               <td className="meta" />
@@ -172,6 +192,15 @@ export function FileTable({ pane, label, entries, selected, onSelect, onOpen, on
                 } : undefined}
                 onKeyDown={(event) => handleKey(event, index)}
               >
+                <td className="cg-check-col" onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    className="cg-check"
+                    aria-label={`${entry.name} seç`}
+                    checked={isSelected}
+                    onChange={() => toggleItem(entry)}
+                  />
+                </td>
                 <td>
                   <span className="cg-name">
                     <Icon name={entry.kind === 'folder' ? 'folder' : 'file'} className={entry.kind === 'folder' ? 'is-dir' : undefined} />

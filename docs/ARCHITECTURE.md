@@ -19,7 +19,7 @@ Electron (desktop/main.cjs)
                                  └─ fetch + X-CyberGoose-Token ─> yerel API
 ```
 
-Geliştirmede üç süreç ayrı çalışır (`npm run dev`): Flask `127.0.0.1:5502`, Vite `localhost:5173` (`/api` proxy'si Flask'a gider) ve Electron.
+Geliştirmede üç süreç ayrı çalışır (`npm run dev`): Flask `127.0.0.1:5502`, Vite `localhost:5175` (`/api` proxy'si Flask'a gider) ve Electron.
 
 ## 2. Klasör yapısı
 

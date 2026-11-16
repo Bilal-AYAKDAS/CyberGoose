@@ -9,6 +9,7 @@ import { FileInspector } from './components/FileInspector'
 import { FileManagerView } from './components/FileManagerView'
 import { Notice } from './components/Notice'
 import { PromptDialog } from './components/PromptDialog'
+import { RemoteAccessModal, type DirectTerminalTarget, type RemoteAccessMode } from './components/RemoteAccessModal'
 import { Sidebar } from './components/Sidebar'
 import { TerminalDrawer } from './components/TerminalDrawer'
 import { TransferQueue } from './components/TransferQueue'
@@ -168,6 +169,8 @@ function App({ onReady }: { onReady?: () => void }) {
   const [menu, setMenu] = useState<MenuState>(null)
   const [inspectedEntry, setInspectedEntry] = useState<FileEntry | null>(null)
   const [terminalOpen, setTerminalOpen] = useState(false)
+  const [directTerminal, setDirectTerminal] = useState<DirectTerminalTarget | null>(null)
+  const [remoteAccessModal, setRemoteAccessModal] = useState<RemoteAccessMode | null>(null)
 
   const reloadPane = (pane: PaneId) => {
     if (pane === 'local') local.reload()
@@ -344,6 +347,20 @@ function App({ onReady }: { onReady?: () => void }) {
   const remotePane = { ...remote, visibleEntries: visibleRemote, editSignal: editSignal.remote }
 
   const canTerminal = Boolean(isConnected && activeConnection?.type === 'SFTP')
+  const showTerminalDrawer = terminalOpen && (Boolean(directTerminal) || (canTerminal && Boolean(activeConnection)))
+
+  const handleOpenTerminal = () => {
+    if (canTerminal) {
+      setDirectTerminal(null)
+      setTerminalOpen((open) => !open)
+      return
+    }
+    if (terminalOpen && directTerminal) {
+      setTerminalOpen(false)
+      return
+    }
+    setRemoteAccessModal('ssh')
+  }
 
   return (
     <div className="cg-window">
@@ -355,8 +372,7 @@ function App({ onReady }: { onReady?: () => void }) {
         canCreateFolder={canCreateFolder}
         canInspect={Boolean(focusedSelection && focusedSelection.kind === 'file')}
         canDelete={Boolean(focusedSelections.length)}
-        canTerminal={canTerminal}
-        terminalOpen={terminalOpen}
+        terminalOpen={showTerminalDrawer}
         query={query}
         bookmarksOpen={bookmarksOpen}
         onNewConnection={() => setDialog({ open: true })}
@@ -366,7 +382,8 @@ function App({ onReady }: { onReady?: () => void }) {
         onRefresh={() => focusedDir.reload()}
         onDelete={() => askDelete(focusedPane, focusedSelections)}
         onInspect={() => focusedSelection && setInspectedEntry(focusedSelection)}
-        onToggleTerminal={() => setTerminalOpen((open) => !open)}
+        onOpenTerminal={handleOpenTerminal}
+        onOpenRdp={() => setRemoteAccessModal('rdp')}
         onToggleBookmarks={() => setBookmarksOpen((open) => !open)}
         onQueryChange={setQuery}
       />
@@ -437,8 +454,13 @@ function App({ onReady }: { onReady?: () => void }) {
         )}
         <FileInspector entry={inspectedEntry} onClose={() => setInspectedEntry(null)} />
       </div>
-      {terminalOpen && canTerminal && activeConnection && (
-        <TerminalDrawer connection={activeConnection} theme={theme} onClose={() => setTerminalOpen(false)} />
+      {showTerminalDrawer && (
+        <TerminalDrawer
+          connection={directTerminal ? null : activeConnection}
+          directTarget={directTerminal}
+          theme={theme}
+          onClose={() => { setTerminalOpen(false); setDirectTerminal(null) }}
+        />
       )}
       <TransferQueue
         items={transfers}
@@ -462,6 +484,17 @@ function App({ onReady }: { onReady?: () => void }) {
           onClose={() => setDialog({ open: false })}
           onSave={async (values) => { await saveFromDialog(values, dialog.initial) }}
           onConnect={(values) => connectFromDialog(values, dialog.initial)}
+        />
+      )}
+      {remoteAccessModal && (
+        <RemoteAccessModal
+          initialMode={remoteAccessModal}
+          savedConnections={connections}
+          onOpenSsh={(target) => {
+            setDirectTerminal(target)
+            setTerminalOpen(true)
+          }}
+          onClose={() => setRemoteAccessModal(null)}
         />
       )}
       {confirm && <ConfirmDialog title={confirm.title} message={confirm.message} confirmLabel={confirm.confirmLabel} onConfirm={confirm.action} onClose={() => setConfirm(null)} />}
