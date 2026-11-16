@@ -5,12 +5,18 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+from config import GOOGLE_CLIENT_SECRETS_FILE, GOOGLE_TOKEN_FILE
 
 class DriveService:
-    def __init__(self, client_secrets_file='credentials.json', token_file='token.json', scopes=['https://www.googleapis.com/auth/drive']):
+    def __init__(
+        self,
+        client_secrets_file=GOOGLE_CLIENT_SECRETS_FILE,
+        token_file=GOOGLE_TOKEN_FILE,
+        scopes=None,
+    ):
         self.client_secrets_file = client_secrets_file
         self.token_file = token_file
-        self.scopes = scopes
+        self.scopes = scopes or ['https://www.googleapis.com/auth/drive']
         self.service = self.create_drive_service()
 
     def create_drive_service(self):

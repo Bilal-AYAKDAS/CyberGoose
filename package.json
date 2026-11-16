@@ -1,0 +1,54 @@
+{
+  "name": "cybergoose",
+  "version": "1.0.0",
+  "description": "CyberGoose, yerel dosyalar ile FTP, SFTP, Dropbox ve Google Drive gibi uzak depolar arasında dosya aktarımı yapmayı hedefleyen iki panelli bir dosya yöneticisidir.",
+  "main": "electron/main.cjs",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:electron": "wait-on http://localhost:5173 && cross-env ELECTRON_RENDERER_URL=http://localhost:5173 electron .",
+    "dev": "concurrently -k \"npm:dev:frontend\" \"npm:dev:electron\"",
+    "build:frontend": "npm --prefix frontend run build",
+    "start": "electron .",
+    "dist": "npm run build:frontend && electron-builder",
+    "lint": "npm --prefix frontend run lint",
+    "test:unit": "npm --prefix frontend run test:unit",
+    "test": "npm run test:unit"
+  },
+  "build": {
+    "appId": "com.cybergoose.app",
+    "productName": "CyberGoose",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "frontend/dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Bilal-AYAKDAS/CyberGoose.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Bilal-AYAKDAS/CyberGoose/issues"
+  },
+  "homepage": "https://github.com/Bilal-AYAKDAS/CyberGoose#readme",
+  "devDependencies": {
+    "concurrently": "^10.0.7",
+    "cross-env": "^10.1.0",
+    "electron": "^45.3.3",
+    "electron-builder": "^26.18.0",
+    "wait-on": "^9.5.1"
+  }
+}

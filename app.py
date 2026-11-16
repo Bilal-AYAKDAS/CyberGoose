@@ -7,6 +7,7 @@ from db import DbMyFtp
 from dropboxIslemleri import DropboxOperations
 from drive_conn import DriveService
 import string
+from config import FLASK_DEBUG, FLASK_HOST, FLASK_PORT
 
 app = Flask(__name__)
 CORS(app)  # Tüm kaynaklardan gelen isteklere izin verir
@@ -42,6 +43,44 @@ def file_info():
         return jsonify({"error": "Filepath is required"}), 400
     file_info = serverConn.get_file_details(filepath)
     return jsonify(file_info)
+
+@app.route('/api/localfileinfo', methods=['POST'])
+def local_file_info():
+    data = request.get_json(silent=True) or {}
+    filepath = data.get('filepath')
+    if not filepath:
+        return jsonify({"error": "Filepath is required"}), 400
+    try:
+        return jsonify(mycomp.inspect_file(filepath))
+    except FileNotFoundError:
+        return jsonify({"error": "File not found"}), 404
+    except IsADirectoryError:
+        return jsonify({"error": "Path is a directory"}), 400
+    except OSError:
+        app.logger.exception("Unable to inspect local file")
+        return jsonify({"error": "Unable to inspect local file"}), 500
+
+@app.route('/api/localfilepreview', methods=['POST'])
+def local_file_preview():
+    data = request.get_json(silent=True) or {}
+    filepath = data.get('filepath')
+    if not filepath:
+        return jsonify({"error": "Filepath is required"}), 400
+    try:
+        inspection = mycomp.inspect_file(filepath)
+        return jsonify({
+            "FileName": inspection["FileName"],
+            "FilePath": inspection["FilePath"],
+            "preview": inspection["preview"],
+            "previewTruncated": inspection["previewTruncated"],
+        })
+    except FileNotFoundError:
+        return jsonify({"error": "File not found"}), 404
+    except IsADirectoryError:
+        return jsonify({"error": "Path is a directory"}), 400
+    except OSError:
+        app.logger.exception("Unable to preview local file")
+        return jsonify({"error": "Unable to preview local file"}), 500
 
 @app.route('/api/fileUpdate', methods=['POST'])
 def filemodechange():
@@ -267,4 +306,4 @@ def delete_bookmark():
         return jsonify({'error': 'İçerik tipi "application/json" değil'})
 
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5502,debug=True)
+    app.run(host=FLASK_HOST, port=FLASK_PORT, debug=FLASK_DEBUG)

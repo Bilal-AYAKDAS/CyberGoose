@@ -1,0 +1,10 @@
+Flask
+Flask-Cors
+dropbox
+google-api-python-client
+google-auth
+google-auth-oauthlib
+msal
+paramiko
+python-dotenv
+requests
