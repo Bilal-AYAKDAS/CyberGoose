@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { Bookmark, ConnectionProfile } from '../types'
+import { Icon } from './Icon'
 
 type BookmarksPanelProps = {
   bookmarks: Bookmark[]
@@ -8,20 +9,42 @@ type BookmarksPanelProps = {
   onClose: () => void
 }
 
+/** Dizin yer imleri: yüzen katman (bg-overlay + shadow-overlay), isimle filtrelenir. */
 export function BookmarksPanel({ bookmarks, connections, onSelect, onClose }: BookmarksPanelProps) {
   const [query, setQuery] = useState('')
-  const filtered = useMemo(() => bookmarks.filter((bookmark) => bookmark.name.toLowerCase().includes(query.toLowerCase())), [bookmarks, query])
+  const filtered = useMemo(() => {
+    const needle = query.toLocaleLowerCase('tr')
+    return bookmarks.filter((bookmark) => bookmark.name.toLocaleLowerCase('tr').includes(needle))
+  }, [bookmarks, query])
+
   return (
-    <section className="drawer" aria-label="Yer imleri">
-      <header className="drawer-header"><div><div className="eyebrow">KAYITLI KONUMLAR</div><h2>Yer imleri</h2></div><button className="close-button" onClick={onClose} aria-label="Yer imlerini kapat">×</button></header>
-      <label className="search drawer-search"><span>⌕</span><input aria-label="Yer imlerinde ara" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filtrele..." /></label>
-      <div className="bookmark-list">
+    <section className="cg-popover cg-bookmarks" aria-label="Yer imleri" onKeyDown={(event) => { if (event.key === 'Escape') onClose() }}>
+      <header className="cg-popover-head">
+        <span>Yer imleri</span>
+        <button className="cg-btn cg-btn-icon cg-btn-ghost" onClick={onClose} aria-label="Yer imlerini kapat"><Icon name="close" /></button>
+      </header>
+      <label className="cg-search cg-popover-search">
+        <Icon name="search" />
+        <input aria-label="Yer imlerinde ara" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filtrele" autoFocus />
+      </label>
+      <ul className="cg-bookmark-list">
         {filtered.map((bookmark) => {
           const connection = connections.find((item) => item.id === bookmark.connectionId)
-          return <button className="bookmark-item" key={bookmark.id} onClick={() => onSelect(bookmark)}><span className="bookmark-mark">★</span><span><strong>{bookmark.name}</strong><small>{connection?.name ?? 'Bilinmeyen bağlantı'} · {bookmark.path}</small></span></button>
+          return (
+            <li key={bookmark.id}>
+              <button className="cg-conn" onClick={() => onSelect(bookmark)}>
+                <Icon name="bookmark" />
+                <span className="cg-conn-text">
+                  <span className="n">{bookmark.name}</span>
+                  <span className="h">{connection?.name ?? 'Bilinmeyen bağlantı'} · {bookmark.path}</span>
+                </span>
+                <span />
+              </button>
+            </li>
+          )
         })}
-        {!filtered.length && <p className="empty-state">Eşleşen yer imi yok.</p>}
-      </div>
+      </ul>
+      {!filtered.length && <p className="cg-help cg-popover-empty">Eşleşen yer imi yok.</p>}
     </section>
   )
 }

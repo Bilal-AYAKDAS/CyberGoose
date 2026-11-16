@@ -1,9 +1,15 @@
 export type EntryKind = 'folder' | 'file'
 
+/** Hangi panelden geldiği: inspector yalnızca yerel dosyalar için backend'e gider. */
+export type EntrySource = 'local' | 'remote'
+
 export type FileEntry = {
   name: string
   kind: EntryKind
-  size: string
+  source: EntrySource
+  /** Bayt cinsinden boyut; klasörlerde null. */
+  size: number | null
+  /** ISO-8601 değiştirilme zamanı. */
   modified: string
   path?: string
   permissions?: string
@@ -23,7 +29,10 @@ export type FileInspection = {
   previewTruncated: boolean
 }
 
-export type ConnectionType = 'FTP' | 'SFTP' | 'S3' | 'Dropbox' | 'GoogleDrive'
+/** Tasarımdaki ProtocolTag sırası. FTPS backend'de henüz yok (arayüzde devre dışı). */
+export type ConnectionType = 'FTP' | 'FTPS' | 'SFTP' | 'Dropbox' | 'GoogleDrive'
+
+export type ConnectionStatus = 'connected' | 'offline' | 'error'
 
 export type ConnectionProfile = {
   id: string
@@ -33,7 +42,7 @@ export type ConnectionProfile = {
   port: string
   username: string
   path: string
-  status: 'connected' | 'offline' | 'unknown'
+  status: ConnectionStatus
 }
 
 export type Bookmark = {
@@ -44,16 +53,29 @@ export type Bookmark = {
   type: 'connection' | 'directory'
 }
 
-export type TransferStatus = 'queued' | 'transferring' | 'completed' | 'error' | 'cancelled'
+export type TransferStatus = 'queued' | 'transferring' | 'paused' | 'completed' | 'error' | 'cancelled'
 
 export type TransferItem = {
   id: string
   name: string
   direction: 'upload' | 'download'
-  size: string
+  /** Kaynak → hedef, ör. `~/Projeler/site → web-01:/var/www/html` */
+  from: string
+  to: string
+  /** Bayt cinsinden toplam boyut. */
+  size: number
   progress: number
+  /** Bayt/sn; yalnızca aktarılırken. */
+  rate?: number
   status: TransferStatus
   error?: string
+  /** Teknik hata kodu (ECONNRESET, 530); tooltip'te gösterilir. */
+  errorCode?: string
 }
 
-export type ConnectionFormValues = Omit<ConnectionProfile, 'id' | 'status'>
+export type PaneId = 'local' | 'remote'
+
+export type ConnectionFormValues = Omit<ConnectionProfile, 'id' | 'status'> & {
+  /** Parola yalnızca bağlantı isteğinde kullanılır, profilde saklanmaz. */
+  password: string
+}

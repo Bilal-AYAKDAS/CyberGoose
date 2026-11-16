@@ -1,6 +1,12 @@
-const { contextBridge, shell } = require('electron');
+// Sandbox açıkken preload yalnızca sınırlı modüllere erişir (ipcRenderer, contextBridge...);
+// `shell` burada yoktur. Bu yüzden harici link açma main sürece IPC ile devredilir.
+const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('cyberGoose', {
   platform: process.platform,
-  openExternal: (url) => shell.openExternal(url),
+  openExternal: (url) => ipcRenderer.invoke('cybergoose:open-external', String(url)),
+  // Yalnızca 'dark' | 'light' kabul edilir; main süreç değeri tekrar doğrular.
+  setTheme: (theme) => {
+    if (theme === 'dark' || theme === 'light') ipcRenderer.send('cybergoose:theme', theme);
+  },
 });

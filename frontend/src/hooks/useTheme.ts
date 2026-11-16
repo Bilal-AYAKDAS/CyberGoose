@@ -1,16 +1,30 @@
 import { useEffect, useState } from 'react'
 
+/** Graphite (koyu, varsayılan) ve Paper (açık). */
 export type Theme = 'dark' | 'light'
 
+const STORAGE_KEY = 'cybergoose-theme'
+
+function readSavedTheme(): Theme {
+  try {
+    return window.localStorage.getItem(STORAGE_KEY) === 'light' ? 'light' : 'dark'
+  } catch {
+    return 'dark'
+  }
+}
+
 export function useTheme() {
-  const [theme, setTheme] = useState<Theme>(() => {
-    const saved = window.localStorage.getItem('cybergoose-theme')
-    return saved === 'light' ? 'light' : 'dark'
-  })
+  const [theme, setTheme] = useState<Theme>(readSavedTheme)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
-    window.localStorage.setItem('cybergoose-theme', theme)
+    try {
+      window.localStorage.setItem(STORAGE_KEY, theme)
+    } catch {
+      // Depolama kapalıysa tema yalnızca bu oturumda geçerli olur.
+    }
+    // Electron: başlık çubuğu overlay'i ve pencere zemini temaya uysun (beyaz flaş olmasın).
+    window.cyberGoose?.setTheme?.(theme)
   }, [theme])
 
   return {

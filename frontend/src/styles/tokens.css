@@ -1,0 +1,120 @@
+/*
+ * CyberGoose tasarım token'ları.
+ * Kaynak: CyberGoose Design System (project/tokens.json). Değerleri burada elle değiştirmeyin;
+ * önce tasarım sistemini güncelleyin, sonra bu dosyayı eşleyin.
+ * Varsayılan tema Graphite (koyu); Paper (açık) `<html data-theme="light">` ile seçilir.
+ */
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* Marka — tema değişse de sabit */
+  --brand-beak: #ff6a1f;
+  --brand-graphite: #16181b;
+  --brand-paper: #f2efe8;
+
+  /* Yüzeyler */
+  --bg-app: #0f1113;
+  --bg-pane: #17191c;
+  --bg-raised: #1e2124;
+  --bg-overlay: #23262a;
+  --bg-hover: #24272b;
+  --bg-selected: #3b2518;
+  --bg-selected-inactive: #2a2d31;
+
+  /* Çizgiler */
+  --line: #2b2e33;
+  --line-control: #6b7078;
+
+  /* Metin */
+  --text: #eceae4;
+  --text-muted: #9ea2a9;
+  --text-accent: #ff8b4d;
+  --text-on-accent: #16181b;
+
+  /* Aksan */
+  --accent-hover: #ff7f3d;
+  --focus-ring: var(--text-accent);
+
+  /* Durum */
+  --status-ok: #4cc26f;
+  --status-ok-soft: #18301f;
+  --status-error: #ff6b5a;
+  --status-error-soft: #3a1e1b;
+  --status-warn: #e8b13a;
+  --status-warn-soft: #33280f;
+
+  --shadow-overlay: 0 0 0 1px #2b2e33, 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg-app: #e9e6df;
+  --bg-pane: #faf9f6;
+  --bg-raised: #f3f1ec;
+  --bg-overlay: #ffffff;
+  --bg-hover: #eeebe4;
+  --bg-selected: #ffe4d4;
+  --bg-selected-inactive: #e4e1da;
+
+  --line: #dcd8cf;
+  --line-control: #8c877c;
+
+  --text: #16181b;
+  --text-muted: #5b5e65;
+  --text-accent: #a63a05;
+  --text-on-accent: #16181b;
+
+  --accent-hover: #f25a0d;
+
+  --status-ok: #1a6e34;
+  --status-ok-soft: #ddf0e2;
+  --status-error: #b02c1a;
+  --status-error-soft: #fbe3de;
+  --status-warn: #7a5300;
+  --status-warn-soft: #f6ebcf;
+
+  --shadow-overlay: 0 0 0 1px #dcd8cf, 0 8px 24px rgba(22, 24, 27, 0.14);
+}
+
+:root {
+  /* Tipografi */
+  --font-sans: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'Cascadia Mono', ui-monospace, monospace;
+
+  /* Boşluk (4px ızgara) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Köşe */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  /* Ölçüler */
+  --size-titlebar: 36px;
+  --size-toolbar: 40px;
+  --size-pathbar: 32px;
+  --size-row: 28px;
+  --size-row-comfortable: 32px;
+  --size-control: 28px;
+  --size-statusbar: 24px;
+  --size-sidebar: 220px;
+
+  /* Hareket */
+  --motion-fast: 120ms;
+  --motion-medium: 180ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-medium: 0ms;
+  }
+}

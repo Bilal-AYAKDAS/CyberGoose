@@ -97,56 +97,69 @@ def filemodechange():
 
 @app.route('/submit', methods=['POST'])
 def submit():
-    if request.method == 'POST':
-        if request.headers['Content-Type'] == 'application/json':
-            data = request.json
-            conn_type = data.get('conn_type')
-            username = data.get('username')
-            server = data.get('server')
-            port = data.get('port')
-            passwd = data.get('passwd')
-            sshkey = data.get('sshkey')
-            global serverConn
+    """Bağlantı kurar.
 
-            if conn_type == "DropBox":
-                try:
-                    serverConn = DropboxOperations()
-                except Exception as e:
-                    print(e)
-                    print("Dropbox bağlantısı kurulamadı")
-                    return jsonify({'error': 'var'})
-                if serverConn.access_token:
-                    print("Dropbox bağlantısı kuruldu")
-                    return jsonify({'Bağlantı': 'Başarılı'})
-                return jsonify({'error': 'var'})
-            
-            if conn_type == "GoogleDrive":
-                try:
-                    serverConn = DriveService()
-                except Exception as e:
-                    print(e)
-                    print("Drive bağlantısı kurulamadı")
-                    return jsonify({'error': 'var'})
-                print("Drive bağlantısı kuruldu")
-                return jsonify({'Bağlantı': 'Başarılı'})
-            if username and server and port and passwd or sshkey:
-                if conn_type == "FTP":
-                    try:
-                        serverConn = FTPOperations(server, int(port), username, passwd)
-                    except Exception as e:
-                        print(e)
-                        return jsonify({'error': 'var'})
-                elif conn_type == "SFTP":
-                    try:
-                        serverConn = SFTPOperations(server, int(port), username, passwd)
-                    except Exception as e:
-                        print(e)
-                        return jsonify({'error': 'var'})                    
-                return jsonify({'Bağlantı': 'Başarılı'})
-            else:
-                return jsonify({'Bağlantı': 'Parametreleri Eksik'})
+    Başarı: 200 {'Bağlantı': 'Başarılı'}.
+    Hata durumları artık HTTP durum koduyla döner (önceden hepsi 200'dü ve arayüz
+    başarısız bağlantıyı başarılı sanıyordu):
+      415 JSON değil · 400 eksik/geçersiz parametre veya desteklenmeyen tür · 502 sağlayıcıya bağlanılamadı.
+    """
+    global serverConn
+    if not request.is_json:
+        return jsonify({'error': 'İçerik tipi "application/json" olmalı'}), 415
+
+    data = request.get_json(silent=True) or {}
+    conn_type = str(data.get('conn_type') or '').strip()
+    username = data.get('username')
+    server = data.get('server')
+    port = data.get('port')
+    passwd = data.get('passwd')
+    normalized = conn_type.lower()
+
+    if normalized == 'dropbox':
+        try:
+            connection = DropboxOperations()
+        except Exception:
+            app.logger.exception("Dropbox bağlantısı kurulamadı")
+            return jsonify({'error': 'Dropbox bağlantısı kurulamadı'}), 502
+        if not connection.access_token:
+            return jsonify({'error': 'Dropbox erişim izni alınamadı'}), 502
+        serverConn = connection
+        return jsonify({'Bağlantı': 'Başarılı'})
+
+    if normalized == 'googledrive':
+        try:
+            serverConn = DriveService()
+        except Exception:
+            app.logger.exception("Drive bağlantısı kurulamadı")
+            return jsonify({'error': 'Google Drive bağlantısı kurulamadı'}), 502
+        return jsonify({'Bağlantı': 'Başarılı'})
+
+    if normalized not in ('ftp', 'sftp'):
+        return jsonify({'error': f'Desteklenmeyen bağlantı türü: {conn_type or "-"}'}), 400
+
+    if not (username and server and port and passwd):
+        return jsonify({'error': 'Sunucu, port, kullanıcı adı ve parola gerekli'}), 400
+    try:
+        port_number = int(port)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Port sayı olmalı'}), 400
+    if not 1 <= port_number <= 65535:
+        return jsonify({'error': 'Port 1-65535 arasında olmalı'}), 400
+
+    try:
+        if normalized == 'ftp':
+            connection = FTPOperations(server, port_number, username, passwd)
         else:
-            return jsonify({'error': 'İçerik tipi "application/json" değil'})
+            connection = SFTPOperations(server, port_number, username, passwd)
+    except Exception:
+        app.logger.exception("%s bağlantısı kurulamadı", conn_type)
+        return jsonify({'error': f'{server} bağlantısı kurulamadı'}), 502
+    # SFTPOperations kimlik doğrulama hatalarını yutar ve `sftp` oturumu açmadan döner.
+    if normalized == 'sftp' and getattr(connection, 'sftp', None) is None:
+        return jsonify({'error': f'{server} bağlantısı kurulamadı. Kullanıcı adı ve parolayı kontrol edin.'}), 502
+    serverConn = connection
+    return jsonify({'Bağlantı': 'Başarılı'})
 
 @app.route('/api/compdirs', methods=['GET'])
 def getCompDirList():

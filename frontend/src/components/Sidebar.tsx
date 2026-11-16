@@ -1,23 +1,66 @@
 import type { ConnectionProfile } from '../types'
+import { connectionAddress, isCloud } from '../utils/formatters'
+import { Icon } from './Icon'
+import { connectionTone } from '../utils/status'
+import { StatusDot } from './ProtocolTag'
 
 type SidebarProps = {
-  activeView: 'files' | 'bookmarks' | 'transfers'
-  onViewChange: (view: 'files' | 'bookmarks' | 'transfers') => void
+  localRoot: string
   connections: ConnectionProfile[]
   activeConnectionId: string
+  onLocalSelect: () => void
   onConnectionSelect: (id: string) => void
-  onAddConnection: () => void
 }
 
-export function Sidebar({ activeView, onViewChange, connections, activeConnectionId, onConnectionSelect, onAddConnection }: SidebarProps) {
-  return <aside className="sidebar">
-    <div className="sidebar-title">Çalışma alanı</div>
-    <button className={`nav-item ${activeView === 'files' ? 'active' : ''}`} onClick={() => onViewChange('files')}><span>▦</span> Dosya yöneticisi</button>
-    <button className={`nav-item ${activeView === 'bookmarks' ? 'active' : ''}`} onClick={() => onViewChange('bookmarks')}><span>★</span> Yer imleri</button>
-    <button className={`nav-item ${activeView === 'transfers' ? 'active' : ''}`} onClick={() => onViewChange('transfers')}><span>↻</span> Aktarımlar</button>
-    <div className="sidebar-title connections-title">Bağlantılar <button onClick={onAddConnection} aria-label="Bağlantı ekle">+</button></div>
-    {connections.map((connection) => <button className={`connection-item ${connection.id === activeConnectionId ? 'active' : ''}`} key={connection.id} onClick={() => onConnectionSelect(connection.id)}><i className={`status-dot ${connection.status === 'connected' ? 'online' : ''}`} />{connection.name}<small>{connection.type}</small></button>)}
-    <button className="add-connection" onClick={onAddConnection}>+ Yeni bağlantı</button>
-    <div className="sidebar-footer">v0.1.0 · React + Electron</div>
-  </aside>
+/**
+ * Bağlantılar kenar çubuğu (ConnectionList): Yerel, Yer imleri, Bulut.
+ * Grup başlıkları label stili, büyük harf yok. Etkin bağlantı: bg-raised + 2px brand-beak.
+ * Parola ve anahtarlar hiçbir biçimde gösterilmez.
+ */
+export function Sidebar({ localRoot, connections, activeConnectionId, onLocalSelect, onConnectionSelect }: SidebarProps) {
+  const servers = connections.filter((connection) => !isCloud(connection.type))
+  const clouds = connections.filter((connection) => isCloud(connection.type))
+
+  const renderConnection = (connection: ConnectionProfile) => {
+    const active = connection.id === activeConnectionId
+    return (
+      <li key={connection.id}>
+        <button
+          className={`cg-conn ${active ? 'is-active' : ''}`}
+          aria-current={active ? 'true' : undefined}
+          onClick={() => onConnectionSelect(connection.id)}
+        >
+          <Icon name={isCloud(connection.type) ? 'cloud' : 'server'} />
+          <span className="cg-conn-text">
+            <span className="n">{connection.name}</span>
+            <span className="h">{connectionAddress(connection)}</span>
+          </span>
+          <StatusDot tone={connectionTone(connection)} />
+        </button>
+      </li>
+    )
+  }
+
+  return (
+    <nav className="cg-side" aria-label="Bağlantılar">
+      <h6>Yerel</h6>
+      <ul>
+        <li>
+          <button className="cg-conn" onClick={onLocalSelect}>
+            <Icon name="home" />
+            <span className="cg-conn-text">
+              <span className="n">Ev klasörü</span>
+              <span className="h">{localRoot}</span>
+            </span>
+            <span />
+          </button>
+        </li>
+      </ul>
+      <h6>Yer imleri</h6>
+      <ul>{servers.map(renderConnection)}</ul>
+      {!servers.length && <p className="cg-help cg-side-empty">Kayıtlı sunucu yok.</p>}
+      <h6>Bulut</h6>
+      <ul>{clouds.map(renderConnection)}</ul>
+    </nav>
+  )
 }

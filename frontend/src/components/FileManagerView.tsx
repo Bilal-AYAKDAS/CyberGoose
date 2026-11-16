@@ -1,51 +1,109 @@
-import { useMemo, useState } from 'react'
-import type { ConnectionProfile, FileEntry } from '../types'
+import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import type { ConnectionProfile, FileEntry, PaneId } from '../types'
+import { splitPath } from '../utils/formatters'
 import { FileTable } from './FileTable'
-
-const localEntries: FileEntry[] = [
-  { name: 'Belgeler', kind: 'folder', size: '--', modified: 'Bugün, 14:32', path: 'C:/Users/Bilal/Belgeler' },
-  { name: 'Projeler', kind: 'folder', size: '--', modified: 'Dün, 09:18', path: 'C:/Users/Bilal/Projeler' },
-  { name: 'README.md', kind: 'file', size: '3 KB', modified: '16 Kas 2026', path: 'C:/Users/Bilal/README.md', permissions: '0644', hash: '8b1a9953c4611296' , preview: '# CyberGoose\n\nSecure file operations.' },
-  { name: 'rapor.pdf', kind: 'file', size: '1.2 MB', modified: '15 Kas 2026', path: 'C:/Users/Bilal/rapor.pdf', permissions: '0644' },
-]
-
-const remoteEntries: FileEntry[] = [
-  { name: 'backups', kind: 'folder', size: '--', modified: 'Bugün, 10:11', path: '/var/www/backups' },
-  { name: 'public', kind: 'folder', size: '--', modified: '12 Kas 2026', path: '/var/www/public' },
-  { name: 'deploy.zip', kind: 'file', size: '28 MB', modified: '11 Kas 2026', path: '/var/www/deploy.zip', permissions: '0644', hash: 'f4c3b00f8b5a' },
-]
+import { PathBar } from './PathBar'
+import { ProtocolTag } from './ProtocolTag'
 
 type FileManagerViewProps = {
+  localRoot: string
+  localEntries: FileEntry[]
+  remoteEntries: FileEntry[]
   activeConnection: ConnectionProfile
-  onOpenInspector: (entry: FileEntry) => void
-  onAddConnection: () => void
+  focusedPane: PaneId
+  selection: Record<PaneId, string | null>
+  onFocusPane: (pane: PaneId) => void
+  onSelect: (pane: PaneId, entry: FileEntry) => void
+  onOpen: (entry: FileEntry) => void
+  onRefresh: (pane: PaneId) => void
+  onConnect: (connection: ConnectionProfile) => void
 }
 
-export function FileManagerView({ activeConnection, onOpenInspector, onAddConnection }: FileManagerViewProps) {
-  const [selectedLocal, setSelectedLocal] = useState<FileEntry | null>(null)
-  const [selectedRemote, setSelectedRemote] = useState<FileEntry | null>(null)
-  const [query, setQuery] = useState('')
-  const localFiltered = useMemo(() => localEntries.filter((entry) => entry.name.toLowerCase().includes(query.toLowerCase())), [query])
-  const remoteFiltered = useMemo(() => remoteEntries.filter((entry) => entry.name.toLowerCase().includes(query.toLowerCase())), [query])
+const MIN_FRACTION = 0.25
+const MAX_FRACTION = 0.75
 
-  const selectLocal = (entry: FileEntry) => {
-    setSelectedLocal(entry)
-    onOpenInspector(entry)
-  }
-  const selectRemote = (entry: FileEntry) => {
-    setSelectedRemote(entry)
-    onOpenInspector(entry)
+/**
+ * İki panelli düzen: yerel | 1px ayırıcı | uzak. Paneller eşit başlar, ayırıcı sürüklenebilir.
+ * Kullanıcının hangi panelde olduğunu yalnızca yol çubuğunun 2px turuncu üst çizgisi
+ * ve seçim tonu (bg-selected / bg-selected-inactive) söyler.
+ */
+export function FileManagerView(props: FileManagerViewProps) {
+  const { localRoot, localEntries, remoteEntries, activeConnection, focusedPane, selection, onFocusPane, onSelect, onOpen, onRefresh, onConnect } = props
+  const [fraction, setFraction] = useState(0.5)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const container = containerRef.current
+    if (!container) return
+    event.preventDefault()
+    const rect = container.getBoundingClientRect()
+    const move = (moveEvent: PointerEvent) => {
+      const next = (moveEvent.clientX - rect.left) / rect.width
+      setFraction(Math.min(MAX_FRACTION, Math.max(MIN_FRACTION, next)))
+    }
+    const stop = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', stop)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', stop)
   }
 
-  return <section className="content">
-    <div className="content-heading"><div><div className="eyebrow">DOSYA YÖNETİCİSİ</div><h1>Dosyalar</h1><p>Bağlantılarınızdaki dosyaları güvenle yönetin.</p></div><button className="primary-button" onClick={onAddConnection}>+ Bağlantı ekle</button></div>
-    <div className="toolbar"><button>↑ Yükle</button><button>↓ İndir</button><button>↻ Yenile</button><span className="toolbar-spacer" /><label className="search"><span>⌕</span><input aria-label="Dosyalarda ara" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Dosyalarda ara..." /></label></div>
-    <div className="breadcrumbs"><span>⌂</span><b> / </b><span>CyberGoose</span><b> / </b><strong>{activeConnection.name}</strong></div>
-    <div className="panels">
-      <section className="file-panel"><div className="panel-heading"><div><span className="panel-icon local">▣</span><div><h2>Yerel bilgisayar</h2><span className="mono-text">C:\Users\Bilal</span></div></div><button aria-label="Yerel panel menüsü">•••</button></div><FileTable entries={localFiltered} selected={selectedLocal?.name ?? null} onSelect={selectLocal} /><div className="panel-footer">{localFiltered.length} öğe <span>Boş alan: 124 GB</span></div></section>
-      <div className="transfer-divider"><button title="Seçili dosyayı sağa aktar">→</button><button title="Seçili dosyayı sola aktar">←</button></div>
-      <section className="file-panel"><div className="panel-heading"><div><span className="panel-icon remote">⌁</span><div><h2>{activeConnection.name}</h2><span className="mono-text">{activeConnection.type.toLowerCase()}://{activeConnection.host}</span></div></div><button aria-label="Uzak panel menüsü">•••</button></div><FileTable entries={remoteFiltered} selected={selectedRemote?.name ?? null} onSelect={selectRemote} /><div className="panel-footer">{remoteFiltered.length} öğe <span className="connected"><i className="status-dot online" /> Bağlı</span></div></section>
+  const localSegments = splitPath(localRoot)
+  const remoteSegments = splitPath(activeConnection.path)
+  const remoteRoot = activeConnection.username ? `${activeConnection.username}@${activeConnection.host}` : activeConnection.host
+  const isConnected = activeConnection.status === 'connected'
+
+  return (
+    <div
+      ref={containerRef}
+      className="cg-panes"
+      style={{ gridTemplateColumns: `minmax(0, ${fraction}fr) 1px minmax(0, ${1 - fraction}fr)` }}
+    >
+      <section
+        className={`cg-pane ${focusedPane === 'local' ? 'is-focused' : ''}`}
+        aria-label="Yerel panel"
+        onFocusCapture={() => onFocusPane('local')}
+        onMouseDown={() => onFocusPane('local')}
+      >
+        <PathBar tag={<ProtocolTag local />} root={localSegments[0] ?? '~'} segments={localSegments.slice(1)} onRefresh={() => onRefresh('local')} />
+        <FileTable label="Yerel dosyalar" entries={localEntries} selected={selection.local} onSelect={(entry) => onSelect('local', entry)} onOpen={onOpen} />
+      </section>
+
+      <div
+        className="cg-split"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Panelleri yeniden boyutlandır"
+        aria-valuenow={Math.round(fraction * 100)}
+        aria-valuemin={MIN_FRACTION * 100}
+        aria-valuemax={MAX_FRACTION * 100}
+        tabIndex={0}
+        onPointerDown={startResize}
+        onDoubleClick={() => setFraction(0.5)}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowLeft') setFraction((value) => Math.max(MIN_FRACTION, value - 0.05))
+          if (event.key === 'ArrowRight') setFraction((value) => Math.min(MAX_FRACTION, value + 0.05))
+        }}
+      />
+
+      <section
+        className={`cg-pane ${focusedPane === 'remote' ? 'is-focused' : ''}`}
+        aria-label={`${activeConnection.name} paneli`}
+        onFocusCapture={() => onFocusPane('remote')}
+        onMouseDown={() => onFocusPane('remote')}
+      >
+        <PathBar tag={<ProtocolTag connection={activeConnection} />} root={remoteRoot} segments={remoteSegments} onRefresh={isConnected ? () => onRefresh('remote') : undefined} />
+        {isConnected
+          ? <FileTable label={`${activeConnection.name} dosyaları`} entries={remoteEntries} selected={selection.remote} onSelect={(entry) => onSelect('remote', entry)} onOpen={onOpen} />
+          : (
+            <div className="cg-empty">
+              <span className="cg-caption">{activeConnection.name} bağlı değil</span>
+              <span className="cg-help">Dosyaları görmek için bağlanın.</span>
+              <button className="cg-btn" onClick={() => onConnect(activeConnection)}>Bağlan</button>
+            </div>
+          )}
+      </section>
     </div>
-    <div className="activity"><div><span className="activity-icon">✓</span><div><strong>Aktarım kuyruğu hazır</strong><span>Dosyaları paneller arasında seçip aktarın.</span></div></div><span className="mono-text">2 panel açık</span></div>
-  </section>
+  )
 }

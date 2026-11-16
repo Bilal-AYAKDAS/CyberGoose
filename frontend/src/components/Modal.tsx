@@ -1,26 +1,51 @@
-import type { PropsWithChildren } from 'react'
+import { useEffect, useId, useRef, type PropsWithChildren, type ReactNode } from 'react'
 
 type ModalProps = PropsWithChildren<{
   title: string
-  description?: string
+  footer?: ReactNode
   onClose: () => void
+  /** Enter tuşu (input içindeyken) birincil eylemi tetikler. */
+  onSubmit?: () => void
 }>
 
-export function Modal({ title, description, onClose, children }: ModalProps) {
+/**
+ * Diyalog kabuğu: bg-overlay, radius-lg, shadow-overlay, 440px.
+ * Esc = Vazgeç, Enter = birincil eylem; açılınca ilk alan odak alır.
+ */
+export function Modal({ title, footer, onClose, onSubmit, children }: ModalProps) {
+  const titleId = useId()
+  const dialogRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    const first = dialog?.querySelector<HTMLElement>('input:not([disabled])') ?? dialog?.querySelector<HTMLElement>('button:not([disabled])')
+    first?.focus()
+  }, [])
+
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+    <div className="cg-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose()
     }}>
-      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-        <header className="modal-header">
-          <div>
-            <div className="eyebrow">CYBERGOOSE</div>
-            <h2 id="modal-title">{title}</h2>
-            {description && <p>{description}</p>}
-          </div>
-          <button className="close-button" aria-label="Kapat" onClick={onClose}>×</button>
-        </header>
+      <section
+        ref={dialogRef}
+        className="cg-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.stopPropagation()
+            onClose()
+          }
+          if (event.key === 'Enter' && onSubmit && event.target instanceof HTMLInputElement) {
+            event.preventDefault()
+            onSubmit()
+          }
+        }}
+      >
+        <header id={titleId}>{title}</header>
         {children}
+        {footer && <footer>{footer}</footer>}
       </section>
     </div>
   )
