@@ -7,6 +7,8 @@ declare global {
       openExternal: (url: string) => Promise<void>
       /** Başlık çubuğu overlay rengini ve pencere zeminini temaya göre günceller. */
       setTheme?: (theme: 'dark' | 'light') => void
+      /** Yerel API hazır olunca adresi ve istek anahtarı; başlatılamazsa reddedilir. */
+      backend?: () => Promise<{ base: string; token: string }>
     }
   }
 }

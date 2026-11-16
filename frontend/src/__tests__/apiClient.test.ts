@@ -1,40 +1,48 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, apiRequest, connect } from '../services/apiClient'
+import { ApiError, api, apiRequest } from '../services/apiClient'
 
 afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
+
 describe('apiRequest', () => {
   it('returns JSON on successful responses', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 })))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ ok: true })))
     await expect(apiRequest<{ ok: boolean }>('/api/health')).resolves.toEqual({ ok: true })
   })
 
-  it('raises a typed error on failed responses', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: 'offline' }), { status: 503 })))
-    await expect(apiRequest('/api/health')).rejects.toEqual(expect.objectContaining<ApiError>({ name: 'ApiError', message: 'offline', status: 503 }))
+  it('raises a typed error with the backend message and code', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ error: 'Dosya zaten var', code: 'exists' }, 409)))
+    await expect(apiRequest('/api/transfer')).rejects.toMatchObject({ name: 'ApiError', message: 'Dosya zaten var', status: 409, code: 'exists' })
+  })
+
+  it('turns a network failure into an offline error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    const error = await apiRequest('/api/health').catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({ status: 0, code: 'offline' })
   })
 })
 
-describe('connect', () => {
-  it('sends the password and maps Dropbox to the backend name', async () => {
-    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ 'Bağlantı': 'Başarılı' }), { status: 200 }))
+describe('api', () => {
+  it('posts JSON bodies to the new endpoints', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => json({ connected: true, type: 'SFTP' }))
     vi.stubGlobal('fetch', fetchMock)
-    await connect({ type: 'Dropbox', host: '', port: '', username: '', password: '' })
-    await connect({ type: 'SFTP', host: 'h', port: '22', username: 'u', password: 'p' })
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body).conn_type).toBe('DropBox')
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({ conn_type: 'SFTP', server: 'h', port: '22', username: 'u', passwd: 'p' })
+    await api.connect({ type: 'SFTP', connectionId: '8' })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/connect')
+    expect(init.method).toBe('POST')
+    expect(init.headers['Content-Type']).toBe('application/json')
+    expect(JSON.parse(init.body)).toEqual({ type: 'SFTP', connectionId: '8' })
   })
 
-  it('treats a 200 response with an error body as a failure', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: 'var' }), { status: 200 })))
-    await expect(connect({ type: 'FTP', host: 'h', port: '21', username: 'u', password: 'p' })).rejects.toBeInstanceOf(ApiError)
-  })
-
-  it('surfaces 4xx/5xx responses from /submit', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: 'Kimlik doğrulanamadı' }), { status: 502 })))
-    await expect(connect({ type: 'FTP', host: 'h', port: '21', username: 'u', password: 'p' })).rejects.toMatchObject({ status: 502, message: 'Kimlik doğrulanamadı' })
+  it('always sends a body for POST requests without data', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => json({ connected: false }))
+    vi.stubGlobal('fetch', fetchMock)
+    await api.disconnect()
+    expect(fetchMock.mock.calls[0][1].body).toBe('{}')
   })
 })

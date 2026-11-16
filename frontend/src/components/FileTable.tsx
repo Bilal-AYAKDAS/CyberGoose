@@ -1,4 +1,4 @@
-import { useMemo, useState, type KeyboardEvent } from 'react'
+import { useMemo, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import type { FileEntry } from '../types'
 import { formatDate, formatFileSize } from '../utils/formatters'
 import { Icon } from './Icon'
@@ -11,8 +11,13 @@ type FileTableProps = {
   entries: FileEntry[]
   selected: string | null
   onSelect: (entry: FileEntry) => void
-  /** Çift tık veya Enter: dosya detaylarını aç. */
+  /** Çift tık veya Enter: klasöre gir / dosya detaylarını aç. */
   onOpen: (entry: FileEntry) => void
+  /** Varsa listenin başında `..` satırı gösterilir. */
+  onOpenParent?: () => void
+  onContextMenu?: (entry: FileEntry, event: MouseEvent) => void
+  /** Boş klasör metni. */
+  emptyText?: string
 }
 
 const columns: { key: SortKey; label: string; numeric?: boolean }[] = [
@@ -23,7 +28,7 @@ const columns: { key: SortKey; label: string; numeric?: boolean }[] = [
 
 function compare(a: FileEntry, b: FileEntry, key: SortKey): number {
   if (key === 'size') return (a.size ?? -1) - (b.size ?? -1)
-  if (key === 'modified') return a.modified.localeCompare(b.modified)
+  if (key === 'modified') return (a.modified ?? '').localeCompare(b.modified ?? '')
   return a.name.localeCompare(b.name, 'tr', { sensitivity: 'base' })
 }
 
@@ -32,7 +37,7 @@ function compare(a: FileEntry, b: FileEntry, key: SortKey): number {
  * Ad sans; boyut ve tarih mono, text-muted, tabular. Klasörler önce listelenir.
  * Sıralama yalnızca aktif sütunda text-accent bir okla gösterilir.
  */
-export function FileTable({ label, entries, selected, onSelect, onOpen }: FileTableProps) {
+export function FileTable({ label, entries, selected, onSelect, onOpen, onOpenParent, onContextMenu, emptyText = 'Bu klasör boş' }: FileTableProps) {
   const [sort, setSort] = useState<SortState>({ key: 'name', direction: 'asc' })
 
   const sorted = useMemo(() => {
@@ -54,20 +59,24 @@ export function FileTable({ label, entries, selected, onSelect, onOpen }: FileTa
       onOpen(sorted[index])
       return
     }
+    if (event.key === 'Backspace' && onOpenParent) {
+      event.preventDefault()
+      onOpenParent()
+      return
+    }
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
     event.preventDefault()
     const next = sorted[index + (event.key === 'ArrowDown' ? 1 : -1)]
     if (!next) return
     onSelect(next)
-    const row = event.currentTarget.parentElement?.children[index + (event.key === 'ArrowDown' ? 1 : -1)] as HTMLElement | undefined
-    row?.focus()
+    const rows = event.currentTarget.parentElement?.querySelectorAll<HTMLElement>('tr[data-entry]')
+    rows?.[index + (event.key === 'ArrowDown' ? 1 : -1)]?.focus()
   }
 
-  if (!entries.length) {
+  if (!entries.length && !onOpenParent) {
     return (
       <div className="cg-empty">
-        <span className="cg-caption">Bu klasör boş</span>
-        <span className="cg-help">Dosyaları buraya bırakın</span>
+        <span className="cg-caption">{emptyText}</span>
       </div>
     )
   }
@@ -98,16 +107,25 @@ export function FileTable({ label, entries, selected, onSelect, onOpen }: FileTa
           </tr>
         </thead>
         <tbody>
+          {onOpenParent && (
+            <tr className="cg-parent-row" tabIndex={-1} onDoubleClick={onOpenParent} onKeyDown={(event) => { if (event.key === 'Enter') onOpenParent() }} aria-label="Üst klasör">
+              <td><span className="cg-name"><Icon name="folder" className="is-dir" /><span className="cg-name-text">..</span></span></td>
+              <td className="meta num" />
+              <td className="meta" />
+            </tr>
+          )}
           {sorted.map((entry, index) => {
             const isSelected = selected === entry.name
             return (
               <tr
-                key={entry.name}
+                key={entry.path}
                 className={isSelected ? 'is-selected' : undefined}
                 aria-selected={isSelected}
+                data-entry
                 tabIndex={index === focusIndex ? 0 : -1}
                 onClick={() => onSelect(entry)}
                 onDoubleClick={() => onOpen(entry)}
+                onContextMenu={onContextMenu ? (event) => { event.preventDefault(); onSelect(entry); onContextMenu(entry, event) } : undefined}
                 onKeyDown={(event) => handleKey(event, index)}
               >
                 <td>
@@ -123,6 +141,7 @@ export function FileTable({ label, entries, selected, onSelect, onOpen }: FileTa
           })}
         </tbody>
       </table>
+      {!entries.length && <div className="cg-empty cg-empty-inline"><span className="cg-caption">{emptyText}</span></div>}
     </div>
   )
 }

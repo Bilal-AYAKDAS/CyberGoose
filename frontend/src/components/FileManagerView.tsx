@@ -1,22 +1,33 @@
-import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import type { ConnectionProfile, FileEntry, PaneId } from '../types'
-import { splitPath } from '../utils/formatters'
+import { useRef, useState, type MouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import type { DirectoryState } from '../hooks/useDirectory'
+import type { ConnectionProfile, ConnectionStatus, FileEntry, PaneId } from '../types'
+import { connectionLabel } from '../utils/formatters'
 import { FileTable } from './FileTable'
+import { Notice } from './Notice'
 import { PathBar } from './PathBar'
 import { ProtocolTag } from './ProtocolTag'
 
+export type PaneData = DirectoryState & {
+  reload: () => void
+  /** Kullanıcının süzdüğü (arama) liste. */
+  visibleEntries: FileEntry[]
+  editSignal: number
+}
+
 type FileManagerViewProps = {
-  localRoot: string
-  localEntries: FileEntry[]
-  remoteEntries: FileEntry[]
-  activeConnection: ConnectionProfile
+  local: PaneData
+  remote: PaneData
+  connection: ConnectionProfile | null
+  connectionStatus: ConnectionStatus
   focusedPane: PaneId
   selection: Record<PaneId, string | null>
   onFocusPane: (pane: PaneId) => void
   onSelect: (pane: PaneId, entry: FileEntry) => void
-  onOpen: (entry: FileEntry) => void
-  onRefresh: (pane: PaneId) => void
+  onOpen: (pane: PaneId, entry: FileEntry) => void
+  onNavigate: (pane: PaneId, path: string) => void
   onConnect: (connection: ConnectionProfile) => void
+  onNewConnection: () => void
+  onContextMenu: (pane: PaneId, entry: FileEntry, event: MouseEvent) => void
 }
 
 const MIN_FRACTION = 0.25
@@ -28,7 +39,7 @@ const MAX_FRACTION = 0.75
  * ve seçim tonu (bg-selected / bg-selected-inactive) söyler.
  */
 export function FileManagerView(props: FileManagerViewProps) {
-  const { localRoot, localEntries, remoteEntries, activeConnection, focusedPane, selection, onFocusPane, onSelect, onOpen, onRefresh, onConnect } = props
+  const { local, remote, connection, connectionStatus, focusedPane, selection, onFocusPane, onSelect, onOpen, onNavigate, onConnect, onNewConnection, onContextMenu } = props
   const [fraction, setFraction] = useState(0.5)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -49,10 +60,58 @@ export function FileManagerView(props: FileManagerViewProps) {
     window.addEventListener('pointerup', stop)
   }
 
-  const localSegments = splitPath(localRoot)
-  const remoteSegments = splitPath(activeConnection.path)
-  const remoteRoot = activeConnection.username ? `${activeConnection.username}@${activeConnection.host}` : activeConnection.host
-  const isConnected = activeConnection.status === 'connected'
+  const renderBody = (pane: PaneId, data: PaneData, label: string) => {
+    if (data.error && !data.entries.length) {
+      return (
+        <div className="cg-pane-message">
+          <Notice tone="error" title={data.error.message} action={<button className="cg-btn" onClick={data.reload}>Yeniden dene</button>} />
+        </div>
+      )
+    }
+    if (data.loading && data.path === null) {
+      return <div className="cg-empty"><span className="cg-caption">Yükleniyor</span></div>
+    }
+    return (
+      <>
+        {data.error && (
+          <div className="cg-pane-message">
+            <Notice tone="error" title={data.error.message} />
+          </div>
+        )}
+        <FileTable
+          label={label}
+          entries={data.visibleEntries}
+          selected={selection[pane]}
+          onSelect={(entry) => onSelect(pane, entry)}
+          onOpen={(entry) => onOpen(pane, entry)}
+          onOpenParent={data.parent ? () => onNavigate(pane, data.parent as string) : undefined}
+          onContextMenu={(entry, event) => onContextMenu(pane, entry, event)}
+          emptyText={data.entries.length ? 'Aramayla eşleşen öğe yok' : 'Bu klasör boş'}
+        />
+      </>
+    )
+  }
+
+  const renderRemote = () => {
+    if (!connection) {
+      return (
+        <div className="cg-empty">
+          <span className="cg-display">Henüz bağlantı yok</span>
+          <span className="cg-help">Kenar çubuğundan bir bağlantı seçin ya da yeni bir tane ekleyin.</span>
+          <button className="cg-btn cg-btn-primary" onClick={onNewConnection}>Yeni bağlantı</button>
+        </div>
+      )
+    }
+    if (connectionStatus !== 'connected') {
+      return (
+        <div className="cg-empty">
+          <span className="cg-caption">{connectionStatus === 'connecting' ? `${connection.name} bağlanıyor` : `${connection.name} bağlı değil`}</span>
+          {connectionStatus !== 'connecting' && <button className="cg-btn" onClick={() => onConnect(connection)}>Bağlan</button>}
+        </div>
+      )
+    }
+    return renderBody('remote', remote, `${connection.name} dosyaları`)
+  }
 
   return (
     <div
@@ -63,11 +122,19 @@ export function FileManagerView(props: FileManagerViewProps) {
       <section
         className={`cg-pane ${focusedPane === 'local' ? 'is-focused' : ''}`}
         aria-label="Yerel panel"
+        aria-busy={local.loading}
         onFocusCapture={() => onFocusPane('local')}
         onMouseDown={() => onFocusPane('local')}
       >
-        <PathBar tag={<ProtocolTag local />} root={localSegments[0] ?? '~'} segments={localSegments.slice(1)} onRefresh={() => onRefresh('local')} />
-        <FileTable label="Yerel dosyalar" entries={localEntries} selected={selection.local} onSelect={(entry) => onSelect('local', entry)} onOpen={onOpen} />
+        <PathBar
+          tag={<ProtocolTag local />}
+          crumbs={local.crumbs}
+          path={local.path}
+          editSignal={local.editSignal}
+          onNavigate={(path) => onNavigate('local', path)}
+          onRefresh={local.reload}
+        />
+        {renderBody('local', local, 'Yerel dosyalar')}
       </section>
 
       <div
@@ -89,20 +156,21 @@ export function FileManagerView(props: FileManagerViewProps) {
 
       <section
         className={`cg-pane ${focusedPane === 'remote' ? 'is-focused' : ''}`}
-        aria-label={`${activeConnection.name} paneli`}
+        aria-label={connection ? `${connection.name} paneli` : 'Uzak panel'}
+        aria-busy={remote.loading}
         onFocusCapture={() => onFocusPane('remote')}
         onMouseDown={() => onFocusPane('remote')}
       >
-        <PathBar tag={<ProtocolTag connection={activeConnection} />} root={remoteRoot} segments={remoteSegments} onRefresh={isConnected ? () => onRefresh('remote') : undefined} />
-        {isConnected
-          ? <FileTable label={`${activeConnection.name} dosyaları`} entries={remoteEntries} selected={selection.remote} onSelect={(entry) => onSelect('remote', entry)} onOpen={onOpen} />
-          : (
-            <div className="cg-empty">
-              <span className="cg-caption">{activeConnection.name} bağlı değil</span>
-              <span className="cg-help">Dosyaları görmek için bağlanın.</span>
-              <button className="cg-btn" onClick={() => onConnect(activeConnection)}>Bağlan</button>
-            </div>
-          )}
+        <PathBar
+          tag={<ProtocolTag connection={connection} status={connectionStatus} />}
+          crumbs={connectionStatus === 'connected' ? remote.crumbs : []}
+          rootLabel={connection ? connectionLabel(connection) : undefined}
+          path={connectionStatus === 'connected' ? remote.path : null}
+          editSignal={remote.editSignal}
+          onNavigate={connectionStatus === 'connected' ? (path) => onNavigate('remote', path) : undefined}
+          onRefresh={connectionStatus === 'connected' ? remote.reload : undefined}
+        />
+        {renderRemote()}
       </section>
     </div>
   )

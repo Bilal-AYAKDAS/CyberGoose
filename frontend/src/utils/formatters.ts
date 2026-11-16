@@ -1,4 +1,4 @@
-import type { ConnectionProfile, ConnectionType } from '../types'
+import type { ConnectionProfile, ConnectionStatus, ConnectionType } from '../types'
 
 /**
  * Boyutları ondalık birimle biçimlendirir (1 MB = 10⁶ B), tasarım sistemindeki
@@ -24,25 +24,13 @@ export function formatRate(bytesPerSecond: number | undefined): string {
 }
 
 /** Tarih yerel ayarı izler; mono yazıldığı için sütun hizası korunur. */
-export function formatDate(iso: string, locale = 'tr-TR'): string {
+export function formatDate(iso: string | null | undefined, locale = 'tr-TR'): string {
+  if (!iso) return '—'
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return iso
   return new Intl.DateTimeFormat(locale, {
     day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
   }).format(date).replace(',', '')
-}
-
-export function joinRemotePath(base: string, child: string): string {
-  const normalizedBase = base.replace(/\\/g, '/').replace(/\/+$/, '')
-  const normalizedChild = child.replace(/\\/g, '/').replace(/^\/+/, '')
-  if (!normalizedBase) return `/${normalizedChild}`
-  if (!normalizedChild) return normalizedBase || '/'
-  return `${normalizedBase}/${normalizedChild}`
-}
-
-/** Yolu kırıntılara böler; Windows ve POSIX ayırıcılarını kabul eder. */
-export function splitPath(path: string): string[] {
-  return path.split(/[\\/]+/).filter(Boolean)
 }
 
 const protocolLabels: Record<ConnectionType, string> = {
@@ -62,8 +50,8 @@ export function isCloud(type: ConnectionType): boolean {
 }
 
 /** Kenar çubuğu satırı: `kullanıcı@host:port`. Parola asla gösterilmez. */
-export function connectionAddress(connection: ConnectionProfile): string {
-  if (isCloud(connection.type)) return connection.status === 'connected' ? (connection.username || 'Bağlı') : 'Bağlı değil'
+export function connectionAddress(connection: ConnectionProfile, status: ConnectionStatus = 'offline'): string {
+  if (isCloud(connection.type)) return status === 'connected' ? 'Bağlı' : status === 'connecting' ? 'Bağlanıyor' : 'Bağlı değil'
   const user = connection.username ? `${connection.username}@` : ''
   const port = connection.port ? `:${connection.port}` : ''
   return `${user}${connection.host}${port}`
@@ -71,7 +59,19 @@ export function connectionAddress(connection: ConnectionProfile): string {
 
 export function defaultPort(type: ConnectionType): string {
   if (type === 'FTP') return '21'
-  if (type === 'FTPS') return '990'
+  if (type === 'FTPS') return '21'
   if (type === 'SFTP') return '22'
   return ''
+}
+
+/** `kullanıcı@host` veya bulut sağlayıcı adı; başlık çubuğu ve yol çubuğu kökü için. */
+export function connectionLabel(connection: ConnectionProfile): string {
+  if (isCloud(connection.type)) return connection.name
+  return connection.username ? `${connection.username}@${connection.host}` : connection.host
+}
+
+/** Süre: `3 sn`, `1 dk 20 sn`. */
+export function durationText(ms: number): string {
+  const seconds = Math.max(1, Math.round(ms / 1000))
+  return seconds < 60 ? `${seconds} sn` : `${Math.floor(seconds / 60)} dk ${seconds % 60} sn`
 }

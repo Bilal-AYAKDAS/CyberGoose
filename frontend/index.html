@@ -6,8 +6,58 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark light" />
     <title>CyberGoose</title>
+    <script>
+      // Açılış ekranı kayıtlı temayla çizilsin (Paper seçiliyse koyu flaş olmasın).
+      try { if (localStorage.getItem('cybergoose-theme') === 'light') document.documentElement.dataset.theme = 'light' } catch (e) {}
+    </script>
+    <style>
+      /* Açılış ekranı: JS yüklenmeden görünür, değerler tokens.css ile aynıdır. */
+      #cg-splash {
+        --s-bg: #0f1113; --s-fg: #eceae4; --s-muted: #9ea2a9; --s-line: #2b2e33;
+        position: fixed; inset: 0; z-index: 100; display: grid; place-items: center;
+        background: var(--s-bg); color: var(--s-fg);
+        font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;
+        transition: opacity 320ms cubic-bezier(.2, 0, 0, 1), visibility 0s linear 320ms;
+        -webkit-app-region: drag;
+      }
+      [data-theme='light'] #cg-splash { --s-bg: #e9e6df; --s-fg: #16181b; --s-muted: #5b5e65; --s-line: #dcd8cf; }
+      #cg-splash.is-done { opacity: 0; visibility: hidden; }
+      #cg-splash .s-stack { display: grid; justify-items: center; gap: 20px; }
+      #cg-splash svg { width: 61px; height: 81px; overflow: visible; }
+      #cg-splash .s-neck { fill: currentColor; animation: cg-rise 560ms cubic-bezier(.2, 0, 0, 1) both; transform-origin: 50% 100%; }
+      #cg-splash .s-beak { fill: #ff6a1f; animation: cg-beak 420ms cubic-bezier(.2, 0, 0, 1) 300ms both; }
+      #cg-splash .s-name { font-size: 20px; line-height: 28px; font-weight: 600; letter-spacing: .01em; animation: cg-fade 400ms ease-out 420ms both; }
+      #cg-splash .s-track { width: 120px; height: 2px; border-radius: 2px; background: var(--s-line); overflow: hidden; animation: cg-fade 300ms ease-out 560ms both; }
+      #cg-splash .s-track i { display: block; width: 40%; height: 100%; background: #ff6a1f; animation: cg-load 1.1s cubic-bezier(.4, 0, .2, 1) 600ms infinite; }
+      #cg-splash .s-status { min-height: 16px; font-size: 12px; line-height: 16px; color: var(--s-muted); animation: cg-fade 300ms ease-out 560ms both; }
+      #cg-splash .s-status.is-error { color: #ff6b5a; max-width: 420px; text-align: center; -webkit-app-region: no-drag; }
+      [data-theme='light'] #cg-splash .s-status.is-error { color: #b02c1a; }
+      #cg-splash .s-retry {
+        margin-top: 12px; height: 28px; padding: 0 12px; border-radius: 6px; cursor: pointer;
+        font: 500 13px/1 inherit; color: var(--s-fg); background: transparent; border: 1px solid var(--s-line);
+      }
+      #cg-splash.is-done .s-stack { transform: scale(1.04); transition: transform 320ms cubic-bezier(.2, 0, 0, 1); }
+      @keyframes cg-rise { from { transform: scaleY(.2); opacity: 0; } to { transform: none; opacity: 1; } }
+      @keyframes cg-beak { from { transform: translateX(-16px); opacity: 0; } to { transform: none; opacity: 1; } }
+      @keyframes cg-fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+      @keyframes cg-load { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+      @media (prefers-reduced-motion: reduce) {
+        #cg-splash *, #cg-splash { animation: none !important; transition: none !important; }
+      }
+    </style>
   </head>
   <body>
+    <div id="cg-splash" role="status" aria-label="CyberGoose açılıyor">
+      <div class="s-stack">
+        <svg viewBox="0 0 122 162" aria-hidden="true">
+          <path class="s-neck" fill-rule="evenodd" d="M0 162V58A58 58 0 0 1 58 0H84V44H58A14 14 0 0 0 44 58V162ZM60 14V24H70V14Z" />
+          <path class="s-beak" d="M84 0H100L122 22L100 44H84Z" />
+        </svg>
+        <div class="s-name">CyberGoose</div>
+        <div class="s-track"><i></i></div>
+        <div class="s-status" id="cg-splash-status"></div>
+      </div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

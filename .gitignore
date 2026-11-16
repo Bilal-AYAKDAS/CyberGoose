@@ -1,18 +1,25 @@
+# Gizli bilgiler ve yerel veri
 .env
 .env.*
 !.env.example
-
 credentials.json
 token.json
 dropboxtoken.json
-data.db
+*.db
+*.cgpart
 
+# Python
 __pycache__/
 *.py[cod]
-*.log
 .pytest_cache/
 .venv/
 venv/
+backend/build/
+backend/dist/
+
+# Node / Electron
 node_modules/
 dist/
-build/
+release/
+
+*.log

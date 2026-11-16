@@ -1,11 +1,11 @@
 import type { Theme } from '../hooks/useTheme'
 import type { ConnectionProfile, PaneId } from '../types'
-import { formatFileSize, formatRate, protocolLabel } from '../utils/formatters'
+import { formatFileSize, protocolLabel } from '../utils/formatters'
 import { GooseMark } from './GooseMark'
 import { Icon } from './Icon'
 
 type TitleBarProps = {
-  connection: ConnectionProfile
+  connection: ConnectionProfile | null
   theme: Theme
   onToggleTheme: () => void
 }
@@ -15,7 +15,7 @@ type TitleBarProps = {
  * macOS trafik ışıkları ve Windows `titleBarOverlay` için yer CSS'te ayrılır.
  */
 export function TitleBar({ connection, theme, onToggleTheme }: TitleBarProps) {
-  const subtitle = connection.status === 'connected'
+  const subtitle = connection
     ? `${connection.username ? `${connection.username}@` : ''}${connection.host}`
     : null
   return (
@@ -40,6 +40,7 @@ type ToolbarProps = {
   canUpload: boolean
   canDownload: boolean
   canInspect: boolean
+  canDelete: boolean
   query: string
   bookmarksOpen: boolean
   onNewConnection: () => void
@@ -47,6 +48,7 @@ type ToolbarProps = {
   onDownload: () => void
   onRefresh: () => void
   onInspect: () => void
+  onDelete: () => void
   onToggleBookmarks: () => void
   onQueryChange: (value: string) => void
 }
@@ -56,7 +58,7 @@ type ToolbarProps = {
  * panele göre değişir: yerel panel odaktaysa "Yükle", uzak panel odaktaysa "İndir".
  */
 export function Toolbar(props: ToolbarProps) {
-  const { focusedPane, canUpload, canDownload, canInspect, query, bookmarksOpen } = props
+  const { focusedPane, canUpload, canDownload, canInspect, canDelete, query, bookmarksOpen } = props
   const uploadPrimary = focusedPane === 'local'
   return (
     <div className="cg-toolbar" role="toolbar" aria-label="Dosya işlemleri">
@@ -66,13 +68,13 @@ export function Toolbar(props: ToolbarProps) {
       <button className={`cg-btn ${uploadPrimary ? '' : 'cg-btn-primary'}`} disabled={!canDownload} onClick={props.onDownload}><Icon name="download" />İndir</button>
       <span className="sep" />
       <button className="cg-btn cg-btn-icon cg-btn-ghost" aria-label="Yenile" title="Yenile" onClick={props.onRefresh}><Icon name="refresh" /></button>
-      <button className="cg-btn cg-btn-icon cg-btn-ghost" aria-label="Sil" title="Silme, dosya API'si bağlandığında etkinleşecek" disabled><Icon name="trash" /></button>
+      <button className="cg-btn cg-btn-icon cg-btn-ghost" aria-label="Sil" title="Sil (Delete)" disabled={!canDelete} onClick={props.onDelete}><Icon name="trash" /></button>
       <button className="cg-btn cg-btn-icon cg-btn-ghost" aria-label="Detaylar" title="Detaylar (Enter)" disabled={!canInspect} onClick={props.onInspect}><Icon name="info" /></button>
       <button className="cg-btn cg-btn-icon cg-btn-ghost" aria-label="Yer imleri" aria-pressed={bookmarksOpen} title="Yer imleri" onClick={props.onToggleBookmarks}><Icon name="bookmark" /></button>
       <span className="grow" />
       <label className="cg-search">
         <Icon name="search" />
-        <input aria-label="Bu klasörde ara" placeholder="Bu klasörde ara" value={query} onChange={(event) => props.onQueryChange(event.target.value)} />
+        <input id="cg-search-input" aria-label="Bu klasörde ara" placeholder="Bu klasörde ara" value={query} onChange={(event) => props.onQueryChange(event.target.value)} />
       </label>
     </div>
   )
@@ -82,13 +84,13 @@ type StatusBarProps = {
   itemCount: number
   selectedCount: number
   selectedSize: number | null
-  rate: number
-  connection: ConnectionProfile
+  activeTransfer: string | null
+  connection: ConnectionProfile | null
 }
 
 /** Durum çubuğu (24px, bg-app, caption). Sayılar mono. */
-export function StatusBar({ itemCount, selectedCount, selectedSize, rate, connection }: StatusBarProps) {
-  const security = connection.type === 'FTP' ? 'şifresiz' : connection.status === 'connected' ? 'bağlı' : 'bağlı değil'
+export function StatusBar({ itemCount, selectedCount, selectedSize, activeTransfer, connection }: StatusBarProps) {
+  const security = connection?.type === 'FTP' ? 'bağlı · şifresiz' : 'bağlı'
   return (
     <footer className="cg-statusbar">
       <span>
@@ -96,8 +98,8 @@ export function StatusBar({ itemCount, selectedCount, selectedSize, rate, connec
         {selectedSize !== null && <> · <span className="cg-mono-xs">{formatFileSize(selectedSize)}</span></>}
       </span>
       <span className="grow" />
-      {rate > 0 && <span className="cg-mono-xs">↑ {formatRate(rate)}</span>}
-      <span>{protocolLabel(connection.type)} · {security}</span>
+      {activeTransfer && <span className="cg-statusbar-transfer">Aktarılıyor: {activeTransfer}</span>}
+      <span>{connection ? `${protocolLabel(connection.type)} · ${security}` : 'Bağlı değil'}</span>
     </footer>
   )
 }

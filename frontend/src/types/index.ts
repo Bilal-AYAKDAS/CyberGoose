@@ -1,20 +1,28 @@
 export type EntryKind = 'folder' | 'file'
 
-/** Hangi panelden geldiği: inspector yalnızca yerel dosyalar için backend'e gider. */
+/** Hangi panelden geldiği: inspector yalnızca yerel dosyalar için yerel endpoint'e gider. */
 export type EntrySource = 'local' | 'remote'
 
-export type FileEntry = {
+/** API'nin döndürdüğü dosya/klasör. */
+export type ApiEntry = {
   name: string
   kind: EntryKind
-  source: EntrySource
-  /** Bayt cinsinden boyut; klasörlerde null. */
+  /** Bayt; klasörlerde null. */
   size: number | null
-  /** ISO-8601 değiştirilme zamanı. */
-  modified: string
-  path?: string
-  permissions?: string
-  hash?: string
-  preview?: string
+  /** ISO-8601; sağlayıcı vermezse null. */
+  modified: string | null
+  path: string
+}
+
+export type FileEntry = ApiEntry & { source: EntrySource }
+
+export type Crumb = { name: string; path: string }
+
+export type DirectoryListing = {
+  path: string
+  parent: string | null
+  crumbs: Crumb[]
+  entries: ApiEntry[]
 }
 
 export type FileInspection = {
@@ -29,53 +37,70 @@ export type FileInspection = {
   previewTruncated: boolean
 }
 
-/** Tasarımdaki ProtocolTag sırası. FTPS backend'de henüz yok (arayüzde devre dışı). */
+export type RemoteDetails = { path: string; permissions: string | null; canChmod: boolean }
+
+/** Tasarımdaki ProtocolTag sırası. */
 export type ConnectionType = 'FTP' | 'FTPS' | 'SFTP' | 'Dropbox' | 'GoogleDrive'
 
-export type ConnectionStatus = 'connected' | 'offline' | 'error'
+export type ConnectionStatus = 'connected' | 'connecting' | 'offline' | 'error'
+
+/** Backend'de kayıtlı bağlantı (parola asla dönmez). */
+export type SavedConnection = {
+  id: number
+  name: string
+  type: ConnectionType
+  host: string
+  port: string
+  username: string
+  hasPassword: boolean
+}
 
 export type ConnectionProfile = {
+  /** Kayıtlı bağlantılarda veritabanı kimliği; bulut hesaplarında 'dropbox' / 'drive'. */
   id: string
   name: string
   type: ConnectionType
   host: string
   port: string
   username: string
-  path: string
-  status: ConnectionStatus
+  hasPassword: boolean
+  /** Kayıtlı (silinebilir/düzenlenebilir) mi, yerleşik bulut girişi mi. */
+  saved: boolean
 }
 
-export type Bookmark = {
-  id: string
+export type FolderBookmark = {
+  id: number
   name: string
-  connectionId: string
+  /** null = yerel klasör. */
+  connectionId: string | number | null
   path: string
-  type: 'connection' | 'directory'
 }
 
-export type TransferStatus = 'queued' | 'transferring' | 'paused' | 'completed' | 'error' | 'cancelled'
+export type TransferStatus = 'queued' | 'transferring' | 'completed' | 'error' | 'cancelled'
 
 export type TransferItem = {
   id: string
   name: string
   direction: 'upload' | 'download'
-  /** Kaynak → hedef, ör. `~/Projeler/site → web-01:/var/www/html` */
+  localDir: string
+  remoteDir: string
+  /** Rota metni: `C:\Users\… → host:/var/www`. */
   from: string
   to: string
-  /** Bayt cinsinden toplam boyut. */
-  size: number
-  progress: number
-  /** Bayt/sn; yalnızca aktarılırken. */
-  rate?: number
+  /** Bayt; bilinmiyorsa null. */
+  size: number | null
   status: TransferStatus
+  overwrite?: boolean
   error?: string
-  /** Teknik hata kodu (ECONNRESET, 530); tooltip'te gösterilir. */
+  /** Teknik hata kodu; tooltip'te gösterilir. */
   errorCode?: string
+  startedAt?: number
+  finishedAt?: number
 }
 
 export type PaneId = 'local' | 'remote'
 
-export type ConnectionFormValues = Omit<ConnectionProfile, 'id' | 'status'> & {
-  /** Parola yalnızca bağlantı isteğinde kullanılır, profilde saklanmaz. */
+export type ConnectionFormValues = Omit<ConnectionProfile, 'id' | 'hasPassword' | 'saved'> & {
+  /** Parola yalnızca bağlantı isteğinde kullanılır, saklanmaz. */
   password: string
 }

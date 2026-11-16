@@ -1,83 +1,95 @@
+<p align="center"><img src="desktop/assets/icon.png" width="96" alt="CyberGoose"></p>
+
 # CyberGoose
 
-CyberGoose, yerel dosyalar ile FTP, SFTP, Dropbox ve Google Drive gibi uzak depolar arasında dosya aktarımı yapmayı hedefleyen iki panelli bir dosya yöneticisidir.
+CyberGoose, yerel dosyalar ile FTP, FTPS, SFTP, Dropbox ve Google Drive arasında dosya aktaran iki panelli bir masaüstü dosya yöneticisidir. Windows için tek bir `.exe` olarak paketlenir.
 
-## Mevcut durum
+- İki panel: yerel ve uzak. Klasörde gezinme, arama, sıralama ve sağ tık menüsü vardır.
+- Kayıtlı bağlantılar ve klasör yer imleri tutulur. Parolalar arayüze hiç dönmez.
+- Yükleme ve indirme bir kuyrukta yapılır. Hedefte aynı dosya varsa üzerine yazma sorulur, hatalı aktarım yeniden denenebilir.
+- Dosya detayları: SHA-256, metin önizlemesi ve uzak dosya izinleri (chmod).
+- Graphite (koyu) ve Paper (açık) temaları ve logolu bir açılış ekranı vardır.
+- Bir şey çalışmazsa uygulama örnek veri göstermez, gerçek hatayı gösterir.
 
-Mevcut sürüm Flask ve server-rendered HTML/JavaScript kullanır. Yerel dosya listeleme, FTP/SFTP bağlantısı, Dropbox işlemleri, temel Google Drive bağlantısı, dosya yükleme/indirme/silme ve bağlantı bookmark'ları bulunur. OneDrive sınıfı henüz ana akışa bağlanmamıştır.
+## Proje yapısı
 
-Yeni arayüz iskeleti React 19.3.1 + TypeScript + Vite 8.3.8 ve Electron 45.3.3 ile kurulmuştur. Tasarım sistemi Claude Artifact'taki Graphite/Paper temalarını, IBM Plex Sans/Mono tipografisini, 4px ızgarayı ve tek turuncu `#ff6a1f` aksanını takip eder.
+```text
+backend/    Python yerel API (Flask + waitress), sağlayıcılar, SQLite, pytest
+frontend/   React + TypeScript + Vite arayüzü
+desktop/    Electron kabuğu, backend'i başlatan kod, uygulama ikonu
+docs/       Mimari belge
+```
 
-Bu sürüm yeniden yapılandırma aşamasındadır. Güvenlik, sağlayıcı soyutlaması, hata yönetimi, testler ve kullanıcı arayüzü modernizasyonu önceliklidir.
+Ayrıntılar: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
+## Gereksinimler
+
+- Node.js 20 veya üstü
+- Python 3.11 veya üstü (Windows'ta `py` başlatıcısı ya da PATH'te `python`)
 
 ## Kurulum
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-Copy-Item .env.example .env
+npm run setup
 ```
 
-`.env` dosyasına yalnızca kullanılacak sağlayıcıların değerlerini girin. `.env`, OAuth token dosyaları, Google credentials dosyaları ve yerel veritabanı Git'e gönderilmemelidir.
+`npm run setup` şunları yapar:
 
-```powershell
-python app.py
-```
+- kökteki Electron araçlarını ve `frontend/` bağımlılıklarını kurar,
+- `backend\.venv` sanal ortamını oluşturur (yoksa),
+- `backend/requirements-dev.txt` içindeki Python paketlerini bu ortama kurar.
 
-Varsayılan adres: `http://127.0.0.1:5502`
+Venv'i elle etkinleştirmeniz gerekmez. Backend komutları (`dev:backend`, `test:backend`, `build:backend`) `scripts/python.cjs` aracılığıyla `backend\.venv` içindeki Python'u kendiliğinden kullanır. Sanal ortam yoksa ya da paketler eksikse komut ne yapılacağını söyleyen bir hata verir. Python paketleri değişirse yalnızca `npm run setup:backend` çalıştırmak yeterlidir.
 
-React geliştirme arayüzü:
+Bulut hesapları için `backend/.env.example` dosyasını `backend/.env` olarak kopyalayıp doldurun:
 
-```powershell
-npm run dev:frontend
-```
+- **Dropbox:** <https://www.dropbox.com/developers/apps> adresinde bir uygulama oluşturun. `DROPBOX_APP_KEY` ve `DROPBOX_APP_SECRET` değerlerini girin. Redirect URI olarak `http://localhost:5000/oauth2/callback` ekleyin.
+- **Google Drive:** Google Cloud Console'da "Masaüstü uygulaması" türünde bir OAuth istemcisi oluşturun. İndirdiğiniz dosyayı `backend/credentials.json` olarak kaydedin.
 
-Electron geliştirme penceresi:
+FTP, FTPS ve SFTP için ayar gerekmez; bağlantıyı uygulamadan eklersiniz.
+
+## Geliştirme
 
 ```powershell
 npm run dev
 ```
 
-Production build ve Windows installer:
+Bu komut üç süreci birlikte açar:
+
+- Flask API: `127.0.0.1:5502`
+- Vite: `localhost:5173`
+- Electron penceresi
+
+Ayrı ayrı çalıştırmak için `npm run dev:backend`, `npm run dev:frontend` ve `npm run dev:electron` kullanılır. Yalnızca tarayıcıda denemek için backend ve frontend'i açıp `http://localhost:5173` adresine gidin.
+
+Ücretsiz test sunucusu: `test.rebex.net`. Kullanıcı adı `demo`, parola `password`. SFTP portu 22, FTP/FTPS portu 21. Sunucu salt okunurdur; listeleme ve indirme denenebilir.
+
+## Test
+
+```powershell
+npm test               # frontend (Vitest) + backend (pytest)
+npm run test:frontend
+npm run test:backend   # gerçek bir yerel FTP sunucusuyla uçtan uca testler
+npm run lint
+```
+
+## Tek exe oluşturma (Windows)
 
 ```powershell
 npm run dist
 ```
 
-## Yapılandırma
+Sonuç `release\CyberGoose-1.0.0-portable.exe` dosyasıdır. Tek dosyadır, kurulum gerektirmez. Adımlar:
 
-Yapılandırma [config.py](config.py) tarafından `.env` dosyasından okunur. Örnek değişkenler [.env.example](.env.example) dosyasındadır:
+1. `frontend` Vite ile derlenir.
+2. `backend` PyInstaller ile `backend\dist\cybergoose-backend\` klasörüne paketlenir. Python kurulu olmayan makinede de çalışır.
+3. electron-builder backend'i exe'nin içine gömer. Uygulama açılınca backend'i arka planda rastgele bir portta ve bir erişim anahtarıyla başlatır, kapanınca durdurur.
 
-- Dropbox OAuth uygulama anahtarı, gizli anahtarı ve callback adresi
-- Google Drive OAuth credentials/token dosya yolları
-- Flask host, port ve debug ayarı
+Kurulum sihirbazlı sürüm için `npm run dist:installer` kullanılır.
 
-Gerçek anahtarlar, parolalar veya token'lar kaynak koda yazılmamalıdır. Daha önce açığa çıkmış anahtarlar ayrıca sağlayıcı panellerinden yenilenmelidir.
+Paketli uygulama verilerini `%APPDATA%\CyberGoose` klasöründe tutar: `data.db`, token dosyaları, `credentials.json` ve isteğe bağlı `.env`. Dropbox ve Drive'ı paketli uygulamada kullanmak için `.env` ve `credentials.json` dosyalarını bu klasöre koyun.
 
-## Proje yapısı
+## Güvenlik notları
 
-- `app.py`: HTTP route'ları ve mevcut uygulama giriş noktası
-- `config.py`: ortam değişkenleri ve uygulama ayarları
-- `ftpconn.py`, `sftpconn.py`: FTP/SFTP sağlayıcıları
-- `dropboxIslemleri.py`, `drive_conn.py`, `onedriveislem.py`: bulut sağlayıcıları
-- `os_folder.py`: yerel dosya işlemleri
-- `db.py`: mevcut SQLite bookmark işlemleri
-- `template/`, `static/`: mevcut web arayüzü
-- `docs/REFACTOR_PLAN.md`: hedef mimari ve aşamalı dönüşüm planı
-
-## Flask gerekli mi?
-
-Kısa vadede evet. Flask mevcut sağlayıcı kodlarını ve API endpoint'lerini React arayüzünden ayırmak için uygun bir geçiş katmanıdır. Ancak uzun vadede Flask route'larının doğrudan dosya işlemi yapması yerine provider/service katmanının arkasında kalan bir API olması gerekir.
-
-Önerilen sıra:
-
-1. Flask API ve Python sağlayıcı katmanını güvenli hale getirmek.
-2. Mevcut HTML/JavaScript yerine React tabanlı bir web istemcisi geliştirmek.
-3. Gerekirse React istemcisini Electron ile paketleyerek masaüstü uygulamasına dönüştürmek.
-
-Electron kararı, ilk refactor tamamlanmadan verilmemelidir. Önce API ve React istemcisi tarayıcıda doğrulanır; böylece masaüstü paketleme sorunu iş mantığıyla karışmaz.
-
-## Güvenlik notu
-
-Bu proje uzak sistem kimlik bilgileri ve dosya işlemleriyle çalışır. Üretim kullanımından önce kimlik bilgisi kasası, şifreli bookmark saklama, SFTP host key doğrulaması, path doğrulaması, oturum yönetimi ve işlem onayları tamamlanmalıdır.
+- `.env`, `credentials.json`, `token.json`, `dropboxtoken.json` ve `data.db` artık `backend/` altında ve `.gitignore`'da. Kökteki eski kopyalar bir sonraki commit'te takipten düşer. Ancak eski commit'lerde hâlâ duruyorlar; Dropbox ve Google anahtarlarını sağlayıcı panellerinden yenileyin.
+- Kayıtlı parolalar şimdilik SQLite'ta düz metin duruyor. Windows Credential Manager'a taşınması yol haritasında.

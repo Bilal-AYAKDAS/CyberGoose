@@ -1,14 +1,14 @@
 import { useState, type ReactNode } from 'react'
-import { ApiError, api } from '../services/apiClient'
+import { ApiError } from '../services/apiClient'
 import type { ConnectionFormValues, ConnectionProfile, ConnectionType } from '../types'
 import { defaultPort, isCloud, protocolLabel } from '../utils/formatters'
 import { Modal } from './Modal'
 import { Notice } from './Notice'
 
-/** FTPS tasarımda var ama Flask backend'inde henüz yok; seçenek görünür ve devre dışıdır. */
+/** FTPS: açık TLS (AUTH TLS, varsayılan port 21), veri kanalı da şifrelenir. */
 const protocols: { type: ConnectionType; disabled?: boolean }[] = [
   { type: 'FTP' },
-  { type: 'FTPS', disabled: true },
+  { type: 'FTPS' },
   { type: 'SFTP' },
   { type: 'Dropbox' },
   { type: 'GoogleDrive' },
@@ -16,10 +16,15 @@ const protocols: { type: ConnectionType; disabled?: boolean }[] = [
 
 type FieldErrors = Partial<Record<keyof ConnectionFormValues, string>>
 
+export type ConnectOutcome = { pending: string } | void
+
 type ConnectionModalProps = {
   initial?: ConnectionProfile
+  /** Profili parolasız kaydeder (yeni veya düzenleme). */
+  onSave: (values: ConnectionFormValues) => Promise<void>
+  /** Bağlanır; yeni sunucu bağlantısını parolasız kaydeder. Dropbox izni bekliyorsa `pending` döner. */
+  onConnect: (values: ConnectionFormValues) => Promise<ConnectOutcome>
   onClose: () => void
-  onSaved: (profile: ConnectionProfile) => void
 }
 
 /**
@@ -27,18 +32,19 @@ type ConnectionModalProps = {
  * Footer: Vazgeç (ghost) · Kaydet (secondary) · Bağlan (primary). Enter = Bağlan, Esc = Vazgeç.
  * Parola yalnızca bağlantı isteğinde gönderilir; profilde ve kenar çubuğunda saklanmaz.
  */
-export function ConnectionModal({ initial, onClose, onSaved }: ConnectionModalProps) {
+export function ConnectionModal({ initial, onSave, onConnect, onClose }: ConnectionModalProps) {
   const [values, setValues] = useState<ConnectionFormValues>({
     name: initial?.name ?? '',
     type: initial?.type ?? 'SFTP',
     host: initial?.host ?? '',
     port: initial?.port ?? defaultPort(initial?.type ?? 'SFTP'),
     username: initial?.username ?? '',
-    path: initial?.path ?? '/',
     password: '',
   })
   const [errors, setErrors] = useState<FieldErrors>({})
   const [connectError, setConnectError] = useState<{ message: string; code?: string } | null>(null)
+  const [pending, setPending] = useState<string | null>(null)
+  const storedPassword = Boolean(initial?.hasPassword)
   const [isConnecting, setIsConnecting] = useState(false)
   const cloud = isCloud(values.type)
 
@@ -66,50 +72,50 @@ export function ConnectionModal({ initial, onClose, onSaved }: ConnectionModalPr
       if (!values.host.trim()) next.host = 'Sunucu gerekli.'
       if (!/^\d+$/.test(values.port) || Number(values.port) < 1 || Number(values.port) > 65535) next.port = '1–65535'
       if (!values.username.trim()) next.username = 'Kullanıcı adı gerekli.'
-      if (forConnect && !values.password) next.password = 'Bağlanmak için parolayı girin.'
+      if (forConnect && !values.password && !storedPassword) next.password = 'Bağlanmak için parolayı girin.'
     }
     setErrors(next)
     return Object.keys(next).length === 0
   }
 
-  const toProfile = (status: ConnectionProfile['status']): ConnectionProfile => ({
-    id: initial?.id ?? crypto.randomUUID(),
-    name: values.name.trim(),
-    type: values.type,
-    host: cloud ? (values.type === 'Dropbox' ? 'dropbox.com' : 'drive.google.com') : values.host.trim(),
-    port: cloud ? '' : values.port,
-    username: values.username.trim(),
-    path: values.path.trim() || '/',
-    status,
+  const describe = (error: unknown) => ({
+    message: error instanceof Error ? error.message : 'Bağlantı kurulamadı.',
+    code: error instanceof ApiError && error.code ? error.code : undefined,
   })
 
-  const save = () => {
-    if (!validate(false)) return
-    onSaved(toProfile(initial?.status ?? 'offline'))
-    onClose()
+  const save = async () => {
+    if (isConnecting || !validate(false)) return
+    setIsConnecting(true)
+    try {
+      await onSave(values)
+      onClose()
+    } catch (error) {
+      setConnectError(describe(error))
+      setIsConnecting(false)
+    }
   }
 
   const connect = async () => {
     if (isConnecting || !validate(true)) return
     setIsConnecting(true)
+    setPending(null)
     try {
-      await api.connect({ type: values.type, host: values.host.trim(), port: values.port, username: values.username.trim(), password: values.password })
-      onSaved(toProfile('connected'))
+      const outcome = await onConnect(values)
+      if (outcome && 'pending' in outcome) {
+        setPending(outcome.pending)
+        setIsConnecting(false)
+        return
+      }
       onClose()
     } catch (error) {
-      const target = cloud ? protocolLabelName(values.type) : values.host.trim()
-      setConnectError({
-        message: `${target} bağlantısı kurulamadı.`,
-        code: error instanceof ApiError ? `${error.status} · ${error.message}` : undefined,
-      })
-    } finally {
+      setConnectError(describe(error))
       setIsConnecting(false)
     }
   }
 
   const footer = <>
     <button className="cg-btn cg-btn-ghost" onClick={onClose}>Vazgeç</button>
-    <button className="cg-btn" onClick={save}>Kaydet</button>
+    {!cloud && <button className="cg-btn" disabled={isConnecting} onClick={save}>Kaydet</button>}
     <button className="cg-btn cg-btn-primary" disabled={isConnecting} onClick={connect}>{isConnecting ? 'Bağlanıyor' : 'Bağlan'}</button>
   </>
 
@@ -126,7 +132,7 @@ export function ConnectionModal({ initial, onClose, onSaved }: ConnectionModalPr
                 aria-checked={values.type === type}
                 className={values.type === type ? 'is-on' : undefined}
                 disabled={disabled}
-                title={disabled ? 'FTPS desteği backend tarafında henüz yok' : undefined}
+                title={disabled ? 'Bu protokol henüz desteklenmiyor' : undefined}
                 onClick={() => selectType(type)}
               >
                 {protocolLabel(type)}
@@ -156,10 +162,7 @@ export function ConnectionModal({ initial, onClose, onSaved }: ConnectionModalPr
               {(id, describedBy) => <input id={id} aria-describedby={describedBy} className={`cg-input ${errors.username ? 'is-error' : ''}`} value={values.username} onChange={(event) => update('username', event.target.value)} autoComplete="username" spellCheck={false} />}
             </Field>
             <Field label="Parola" error={errors.password} wide>
-              {(id, describedBy) => <input id={id} aria-describedby={describedBy} type="password" className={`cg-input ${errors.password ? 'is-error' : ''}`} value={values.password} onChange={(event) => update('password', event.target.value)} autoComplete="current-password" />}
-            </Field>
-            <Field label="Başlangıç yolu" wide>
-              {(id) => <input id={id} className="cg-input mono" value={values.path} onChange={(event) => update('path', event.target.value)} spellCheck={false} />}
+              {(id, describedBy) => <input id={id} aria-describedby={describedBy} type="password" className={`cg-input ${errors.password ? 'is-error' : ''}`} value={values.password} onChange={(event) => update('password', event.target.value)} autoComplete="current-password" placeholder={storedPassword ? 'Kayıtlı parola kullanılacak' : undefined} />}
             </Field>
             {values.type === 'FTP' && (
               <div className="wide">
@@ -169,11 +172,14 @@ export function ConnectionModal({ initial, onClose, onSaved }: ConnectionModalPr
           </>
         )}
 
+        {pending && (
+          <div className="wide">
+            <Notice title="İzin bekleniyor">{pending}</Notice>
+          </div>
+        )}
         {connectError && (
           <div className="wide" title={connectError.code}>
-            <Notice tone="error" title={connectError.message}>
-              {cloud ? 'Hesap iznini ve internet bağlantınızı kontrol edin.' : 'Sunucu, port ve parolayı kontrol edin; Flask API çalışıyor olmalı.'}
-            </Notice>
+            <Notice tone="error" title={connectError.message} />
           </div>
         )}
       </div>

@@ -259,3 +259,46 @@ ul { list-style: none; margin: 0; padding: 0; }
   border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--bg-pane);
   font-family: var(--font-mono); font-size: 12px; line-height: 18px;
 }
+
+/* ---------- Gerçek API ile gelen ek parçalar ---------- */
+.cg-workspace { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; }
+.cg-workspace > .cg-panes { grid-row: 2; }
+.cg-workspace-notice { padding: var(--space-2) var(--space-2) 0; background: var(--bg-app); }
+.cg-pane-message { padding: var(--space-3); border-bottom: 1px solid var(--line); }
+.cg-display { font-size: 24px; line-height: 30px; font-weight: 600; color: var(--text); }
+.cg-empty-inline { padding: var(--space-6); }
+
+.cg-crumb {
+  font: inherit; color: var(--text-muted); background: none; border: 0; padding: 2px var(--space-1);
+  border-radius: var(--radius-sm); cursor: pointer;
+}
+.cg-crumb:hover { background: var(--bg-hover); color: var(--text); }
+.cg-path-input {
+  flex: 1; min-width: 0; height: 24px; padding: 0 var(--space-2);
+  font-family: var(--font-mono); font-size: 12px; color: var(--text);
+  background: var(--bg-pane); border: 1px solid var(--line-control); border-radius: var(--radius-sm);
+}
+.cg-list tbody tr.cg-parent-row td { color: var(--text-muted); }
+
+.cg-menu {
+  position: fixed; z-index: 40; min-width: 200px; padding: var(--space-1);
+  background: var(--bg-overlay); border-radius: var(--radius-lg); box-shadow: var(--shadow-overlay);
+  display: flex; flex-direction: column;
+}
+.cg-menu > button {
+  display: flex; align-items: center; gap: var(--space-4); height: 28px; padding: 0 var(--space-2);
+  font: inherit; font-size: 13px; color: var(--text); text-align: left;
+  background: none; border: 0; border-radius: var(--radius-sm); cursor: pointer;
+}
+.cg-menu > button:hover:not([disabled]), .cg-menu > button:focus-visible { background: var(--bg-hover); outline: none; }
+.cg-menu > button.is-danger { color: var(--status-error); }
+.cg-menu > button[disabled] { opacity: .45; cursor: default; }
+.cg-kbd { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+
+.cg-bookmark-row { display: flex; align-items: center; gap: var(--space-1); padding-right: var(--space-2); }
+.cg-bookmark-row > .cg-conn { flex: 1; min-width: 0; }
+.cg-inline { display: flex; gap: var(--space-2); align-items: center; }
+.cg-inline .cg-input { width: 72px; }
+.cg-dialog .body.body-single { grid-template-columns: minmax(0, 1fr); }
+.cg-dialog-text { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+.cg-statusbar-transfer { color: var(--text); max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -1,49 +1,69 @@
 {
   "name": "cybergoose",
   "version": "1.0.0",
-  "description": "CyberGoose, yerel dosyalar ile FTP, SFTP, Dropbox ve Google Drive gibi uzak depolar arasında dosya aktarımı yapmayı hedefleyen iki panelli bir dosya yöneticisidir.",
-  "main": "electron/main.cjs",
-  "directories": {
-    "doc": "docs"
-  },
+  "description": "CyberGoose: yerel dosyalar ile FTP, FTPS, SFTP, Dropbox ve Google Drive arasında dosya aktaran iki panelli masaüstü dosya yöneticisi.",
+  "main": "desktop/main.cjs",
+  "private": true,
   "scripts": {
+    "setup": "npm install && npm --prefix frontend install && npm run setup:backend",
+    "setup:backend": "node scripts/python.cjs setup",
+    "dev": "concurrently -k -n api,web,app -c yellow,cyan,magenta \"npm:dev:backend\" \"npm:dev:frontend\" \"npm:dev:electron\"",
+    "dev:backend": "cross-env FLASK_DEBUG=true node scripts/python.cjs run backend/app.py",
     "dev:frontend": "npm --prefix frontend run dev",
     "dev:electron": "wait-on http://localhost:5173 && cross-env ELECTRON_RENDERER_URL=http://localhost:5173 electron .",
-    "dev": "concurrently -k \"npm:dev:frontend\" \"npm:dev:electron\"",
-    "build:frontend": "npm --prefix frontend run build",
     "start": "electron .",
-    "dist": "npm run build:frontend && electron-builder",
+    "build:frontend": "npm --prefix frontend run build",
+    "build:backend": "node scripts/python.cjs run --cwd backend -m PyInstaller cybergoose-backend.spec --noconfirm --clean --distpath dist --workpath build",
+    "build": "npm run build:frontend && npm run build:backend",
+    "dist": "npm run build && electron-builder --win portable",
+    "dist:installer": "npm run build && electron-builder --win nsis",
     "lint": "npm --prefix frontend run lint",
-    "test:unit": "npm --prefix frontend run test:unit",
-    "test": "npm run test:unit"
+    "test:frontend": "npm --prefix frontend run test:unit",
+    "test:backend": "node scripts/python.cjs run -m pytest backend/tests -q",
+    "test": "npm run test:frontend && npm run test:backend"
   },
   "build": {
     "appId": "com.cybergoose.app",
     "productName": "CyberGoose",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "desktop/assets"
     },
     "files": [
-      "electron/**/*",
+      "desktop/**/*",
       "frontend/dist/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "backend/dist/cybergoose-backend",
+        "to": "backend",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
     "win": {
-      "target": "nsis"
+      "icon": "desktop/assets/icon.png",
+      "target": [
+        "portable"
+      ]
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
     }
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Bilal-AYAKDAS/CyberGoose.git"
   },
-  "keywords": [],
-  "author": "",
   "license": "ISC",
   "type": "commonjs",
-  "bugs": {
-    "url": "https://github.com/Bilal-AYAKDAS/CyberGoose/issues"
-  },
-  "homepage": "https://github.com/Bilal-AYAKDAS/CyberGoose#readme",
   "devDependencies": {
     "concurrently": "^10.0.7",
     "cross-env": "^10.1.0",
