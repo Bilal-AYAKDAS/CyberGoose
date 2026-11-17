@@ -17,7 +17,7 @@ const empty: DirectoryState = { path: null, parent: null, crumbs: [], entries: [
  * Bir paneldeki klasörü API'den yükler. `requestedPath` değişince ya da `reload()` çağrılınca
  * yeniden ister; yarışan isteklerde yalnızca sonuncusu uygulanır.
  */
-export function useDirectory(source: EntrySource, requestedPath: string | null, enabled: boolean, scope?: number | string | null) {
+export function useDirectory(source: EntrySource, requestedPath: string | null, enabled: boolean, scope?: number | string | null, sessionId?: number) {
   const [version, setVersion] = useState(0)
   // `scope` (uzak oturum kimliği) değişince aynı yol da yeniden istenir: başka sunucuya geçince
   // önceki sunucunun listesi görünmez ve işlemler yanlış yollara gitmez.
@@ -34,7 +34,10 @@ export function useDirectory(source: EntrySource, requestedPath: string | null, 
   useEffect(() => {
     if (!enabled || !requestKey) return
     let active = true
-    const request = source === 'local' ? api.listLocal(requestedPath) : api.listRemote(requestedPath ?? '/')
+    // `sessionId`: sol paneldeki ikinci uzak bağlantı (etkin oturumdan bağımsız listelenir).
+    const request = source === 'local'
+      ? api.listLocal(requestedPath)
+      : sessionId !== undefined ? api.listRemote(requestedPath ?? '/', sessionId) : api.listRemote(requestedPath ?? '/')
     request
       .then((listing) => {
         if (!active) return
@@ -60,7 +63,7 @@ export function useDirectory(source: EntrySource, requestedPath: string | null, 
         }))
       })
     return () => { active = false }
-  }, [source, requestedPath, enabled, requestKey])
+  }, [source, requestedPath, enabled, requestKey, sessionId])
 
   const reload = useCallback(() => setVersion((value) => value + 1), [])
 

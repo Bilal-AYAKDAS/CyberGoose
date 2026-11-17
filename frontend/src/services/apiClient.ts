@@ -152,6 +152,18 @@ export type TransferRequest = {
   resume?: boolean
 }
 
+/** Uzaktan uzağa kopya: kaynak oturumdan indirilip hedef oturuma (sessionId) yüklenir. */
+export type CopyRequest = {
+  direction: 'copy'
+  name: string
+  sourceDir: string
+  targetDir: string
+  sourceSessionId: number
+  sessionId: number
+  overwrite?: boolean
+  conflict?: 'overwrite' | 'skip' | 'newer' | 'rename'
+}
+
 export type TransferJobStatus = {
   id: string
   sessionId?: number
@@ -213,6 +225,9 @@ export const api = {
     apiRequest<SessionInfo>('/api/session', { method: 'PUT', body: JSON.stringify({ connectionId }) }),
   connect: (request: ConnectRequest) => post<ConnectResponse>('/api/connect', request),
   disconnect: () => post<{ connected: false }>('/api/disconnect'),
+  /** Sol panel için ikinci uzak bağlantı (etkin oturumu değiştirmez). */
+  connectSide: (request: ConnectRequest) => post<{ connected: true; type: ConnectionType; sessionId: number }>('/api/side/connect', request),
+  disconnectSide: (sessionId: number) => post<{ connected: false }>('/api/side/disconnect', { sessionId }),
 
   localHome: () => apiRequest<{ path: string }>('/api/local/home'),
   localDrives: () => apiRequest<{ drives: string[] }>('/api/local/drives'),
@@ -221,7 +236,7 @@ export const api = {
   listLocal: (path: string | null) => post<DirectoryListing>('/api/local/list', { path }),
   getLocalFileInfo: (path: string) => post<FileInspection>('/api/local/info', { path }),
 
-  listRemote: (path: string) => post<DirectoryListing>('/api/remote/list', { path }),
+  listRemote: (path: string, sessionId?: number) => post<DirectoryListing>('/api/remote/list', { path, sessionId }),
   getRemoteDetails: (path: string) => post<RemoteDetails>('/api/remote/info', { path }),
   chmodRemote: (path: string, mode: string) => post<RemoteDetails>('/api/remote/chmod', { path, mode }),
   readRemoteText: (path: string) => post<RemoteText>('/api/remote/read', { path }),
@@ -239,7 +254,7 @@ export const api = {
     options: { delimiter?: string; encoding?: string; newline?: string } = {},
   ) => post<{ path: string; size: number }>(`/api/${side}/sheet/write`, { path, sheets, ...options }),
 
-  startTransfer: (request: TransferRequest) => post<TransferJobStatus>('/api/transfers', request),
+  startTransfer: (request: TransferRequest | CopyRequest) => post<TransferJobStatus>('/api/transfers', request),
   getTransfer: (jobId: string) => apiRequest<TransferJobStatus>(`/api/transfers/${encodeURIComponent(jobId)}`),
   cancelTransfer: (jobId: string) => post<TransferJobStatus>(`/api/transfers/${encodeURIComponent(jobId)}/cancel`),
   planFolderTransfer: (side: 'local' | 'remote', path: string, sessionId?: number) =>
@@ -259,10 +274,10 @@ export const api = {
     post<{ name: string; path: string; size: number }>('/api/archive', { side: 'local', parentDir, names, name }),
   mkdir: (side: 'local' | 'remote', path: string, name: string, sessionId?: number) =>
     post<{ name: string; path: string }>('/api/mkdir', { side, path, name, sessionId }),
-  renameEntry: (side: 'local' | 'remote', path: string, name: string) =>
-    post<{ name: string; path: string }>('/api/rename', { side, path, name }),
-  deleteEntry: (side: 'local' | 'remote', path: string, permanent = false) =>
-    post<{ deleted: string; trashed: boolean }>('/api/delete', { side, path, permanent }),
+  renameEntry: (side: 'local' | 'remote', path: string, name: string, sessionId?: number) =>
+    post<{ name: string; path: string }>('/api/rename', { side, path, name, sessionId }),
+  deleteEntry: (side: 'local' | 'remote', path: string, permanent = false, sessionId?: number) =>
+    post<{ deleted: string; trashed: boolean }>('/api/delete', { side, path, permanent, sessionId }),
 
   listConnections: () => apiRequest<SavedConnection[]>('/api/connections'),
   createConnection: (input: ConnectionInput) => post<SavedConnection & { warning?: string }>('/api/connections', input),

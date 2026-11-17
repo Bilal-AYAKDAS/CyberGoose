@@ -44,6 +44,8 @@ class SessionSnapshot:
     closed: bool = False
     # Sunucu başına eşzamanlı aktarım bağlantısı sınırı (FTP sunucuları IP başına 2-3 ile sınırlar).
     limit: threading.BoundedSemaphore | None = None
+    # Sol paneldeki ikinci bağlantı: etkin oturum değişse de silinmez (açıkça kapatılana kadar).
+    side: bool = False
 
 
 @dataclass
@@ -188,8 +190,10 @@ class SessionManager:
     def _remember(self, snap: SessionSnapshot) -> None:
         with self._snapshot_lock:
             self._snapshots[snap.id] = snap
-            while len(self._snapshots) > MAX_SNAPSHOTS:
-                self._snapshots.popitem(last=False)
+            # Açık sol panel oturumları sınır dışında tutulur; yalnızca eski oturumlar düşer.
+            evictable = [sid for sid, item in self._snapshots.items() if not (item.side and not item.closed)]
+            while len(self._snapshots) > MAX_SNAPSHOTS and evictable:
+                self._snapshots.pop(evictable.pop(0), None)
 
     # ------------------------------------------------------------ bağlanma
 
@@ -304,11 +308,43 @@ class SessionManager:
         except Exception as exc:
             raise files.FileServiceError(f"OneDrive bağlantısı kurulamadı: {exc}", 502, type(exc).__name__) from exc
 
+    def open_side(self, connection, conn_type: str, connection_id: str | None, factory=None) -> int:
+        """Etkin oturumu değiştirmeden ikinci bir oturum kaydeder (sol panel). Kimliğini döndürür."""
+        if factory is None and conn_type == "GoogleDrive":
+            factory = self.connect_googledrive
+        limit = threading.BoundedSemaphore(2) if conn_type in ("FTP", "FTPS") else None
+        with self._snapshot_lock:
+            session_id = self._next_session
+            self._next_session += 1
+        self._remember(SessionSnapshot(session_id, conn_type, connection_id, connection, factory, limit=limit, side=True))
+        return session_id
+
+    def close_side(self, session_id) -> int | None:
+        """Sol panel oturumunu kapatır; kuyruktaki işleri artık yeniden bağlanamaz."""
+        try:
+            key = int(session_id)
+        except (TypeError, ValueError):
+            raise files.FileServiceError("Geçersiz oturum kimliği", 400)
+        with self._snapshot_lock:
+            snap = self._snapshots.get(key)
+            if snap is None or not snap.side:
+                return None
+            snap.closed = True
+            snap.factory = None
+            shared, snap.shared = snap.shared, None
+        if shared is not None and hasattr(shared, "close"):
+            try:
+                shared.close()
+            except Exception:
+                logger.exception("Sol panel bağlantısı kapatılamadı")
+        return key
+
     def activate(self, connection, conn_type: str, connection_id: str | None, factory=None) -> int:
         """Yeni bağlantıyı etkin yapar (çağıran `lock`'u tutmalıdır). Oturum kimliğini döndürür."""
         self.close_current()
-        session_id = self._next_session
-        self._next_session += 1
+        with self._snapshot_lock:
+            session_id = self._next_session
+            self._next_session += 1
         self.state.connection = connection
         self.state.type = conn_type
         self.state.connection_id = connection_id

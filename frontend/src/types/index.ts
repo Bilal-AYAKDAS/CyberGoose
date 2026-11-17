@@ -105,10 +105,18 @@ export type TransferStatus = 'queued' | 'transferring' | 'completed' | 'error' |
 export type TransferItem = {
   id: string
   name: string
-  direction: 'upload' | 'download'
+  /** copy: uzaktan uzağa (sol paneldeki bağlantı ile sağdaki arasında). */
+  direction: 'upload' | 'download' | 'copy'
+  /** copy'de kullanılmaz; upload/download'da yerel klasör. */
   localDir: string
+  /** upload/download'da uzak klasör; copy'de hedef klasör. */
   remoteDir: string
-  /** İşin bağlı olduğu backend oturumu: kullanıcı bağlantı değiştirse de dosya bu sunucuya gider. */
+  /** copy: kaynak klasör ve oturumu. */
+  sourceDir?: string
+  sourceSessionId?: number
+  /** copy: bitince yenilenecek panel. */
+  targetPane?: PaneId
+  /** İşin bağlı olduğu backend oturumu (copy'de hedef): kullanıcı bağlantı değiştirse de dosya bu sunucuya gider. */
   sessionId: number | null
   /** Öğenin eklendiği bağlantı; oturum kapandıktan sonra aynı bağlantı yeniden açılınca yeniden denenebilir. */
   connectionId?: string

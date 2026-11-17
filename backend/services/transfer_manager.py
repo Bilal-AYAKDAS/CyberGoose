@@ -10,8 +10,12 @@ Aktarımlar paneldeki bağlantıyı ve oturum kilidini kullanmaz:
 from __future__ import annotations
 
 import logging
+import posixpath
+import shutil
+import tempfile
 import threading
 import uuid
+from pathlib import Path
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
@@ -139,6 +143,13 @@ class ConnectionPool:
                     return
         _close_quietly(conn)
 
+    def close_session(self, session_id: int) -> None:
+        """Kapatılan oturumun (ör. sol panel bağlantısı) boştaki bağlantılarını kapatır."""
+        with self._lock:
+            conns = self._idle.pop(session_id, [])
+        for conn in conns:
+            _close_quietly(conn)
+
     def close_idle(self, keep_session: int | None = None) -> None:
         with self._lock:
             doomed = [(sid, conns) for sid, conns in self._idle.items() if sid != keep_session]
@@ -153,8 +164,12 @@ class TransferManager:
     MAX_HISTORY = 200
     MAX_PARALLEL = 4
 
-    def __init__(self, session_manager):
+    def __init__(self, session_manager, relay_dir=None):
         self._sessions = session_manager
+        # Uzaktan uzağa kopyada dosya bu klasörde kısa süre tutulur (indir → yükle).
+        self._relay_dir = Path(relay_dir) if relay_dir else Path(tempfile.gettempdir()) / "cybergoose-relay"
+        # Önceki çalıştırmada (çökme) kalmış geçici kopyalar silinir; uygulama tek örnek çalışır.
+        shutil.rmtree(self._relay_dir, ignore_errors=True)
         self._jobs: dict[str, TransferJob] = {}
         self._lock = threading.Lock()
         self._slots = threading.BoundedSemaphore(self.MAX_PARALLEL)
@@ -177,10 +192,9 @@ class TransferManager:
         with self.pool.borrow(snapshot) as conn:
             return func(conn)
 
-    def start(self, direction: str, name: str, local_dir: str, remote_dir: str, overwrite: bool = False,
-              session_id=None, resume: bool = False, conflict: str | None = None) -> TransferJob:
-        snapshot = self._sessions.snapshot(session_id)
-        job = TransferJob(id=str(uuid.uuid4()), session_id=snapshot.id)
+    def _launch(self, session_id: int, work) -> TransferJob:
+        """İşi kaydeder ve arka planda `work(on_progress, cancel_event)` çalıştırır."""
+        job = TransferJob(id=str(uuid.uuid4()), session_id=session_id)
         with self._lock:
             self._prune_finished()
             self._jobs[job.id] = job
@@ -206,18 +220,7 @@ class TransferManager:
                 try:
                     if job.cancel_event.is_set():
                         raise files.TransferCancelled()
-                    with self.pool.borrow(snapshot) as conn:
-                        if direction == "upload":
-                            res = files.upload(
-                                conn, local_dir, name, remote_dir, overwrite,
-                                progress_cb=on_progress, cancel_event=job.cancel_event, resume=resume, conflict=conflict,
-                            )
-                        else:
-                            res = files.download(
-                                conn, remote_dir, name, local_dir, overwrite,
-                                progress_cb=on_progress, cancel_event=job.cancel_event, resume=resume, conflict=conflict,
-                            )
-                    finish("completed", result=res)
+                    finish("completed", result=work(on_progress, job.cancel_event))
                 except files.TransferCancelled:
                     finish("cancelled", "Aktarım iptal edildi", "cancelled")
                 except files.FileServiceError as exc:
@@ -228,6 +231,71 @@ class TransferManager:
 
         threading.Thread(target=run_job, daemon=True, name=f"transfer-{job.id[:8]}").start()
         return job
+
+    def start(self, direction: str, name: str, local_dir: str, remote_dir: str, overwrite: bool = False,
+              session_id=None, resume: bool = False, conflict: str | None = None) -> TransferJob:
+        snapshot = self._sessions.snapshot(session_id)
+
+        def work(on_progress, cancel_event):
+            with self.pool.borrow(snapshot) as conn:
+                if direction == "upload":
+                    return files.upload(
+                        conn, local_dir, name, remote_dir, overwrite,
+                        progress_cb=on_progress, cancel_event=cancel_event, resume=resume, conflict=conflict,
+                    )
+                return files.download(
+                    conn, remote_dir, name, local_dir, overwrite,
+                    progress_cb=on_progress, cancel_event=cancel_event, resume=resume, conflict=conflict,
+                )
+
+        return self._launch(snapshot.id, work)
+
+    def start_copy(self, name: str, source_dir: str, target_dir: str, source_session_id, target_session_id,
+                   overwrite: bool = False, conflict: str | None = None) -> TransferJob:
+        """Uzaktan uzağa kopya (SFTP→SFTP, FTP→Drive...): kaynak oturumdan geçici klasöre indirir,
+        hedef oturuma yükler, geçici dosyayı siler. İlerleme iki aşamanın toplamıdır (yarı yarıya).
+
+        Hedefteki çakışma indirmeden önce çözülür; atlanacak dosya hiç indirilmez.
+        """
+        source = self._sessions.snapshot(source_session_id)
+        target = self._sessions.snapshot(target_session_id)
+        source_file = posixpath.join(files.normalize_remote(source_dir), name)
+
+        def work(on_progress, cancel_event):
+            def source_mtime():
+                with self.pool.borrow(source) as conn:
+                    return files.remote_mtime(conn, source_file)
+
+            with self.pool.borrow(target) as conn:
+                policy, skipped = files.relay_target_policy(conn, target_dir, name, conflict, overwrite, source_mtime)
+            if skipped is not None:
+                return skipped
+            relay = self._relay_dir / uuid.uuid4().hex
+            relay.mkdir(parents=True, exist_ok=True)
+            try:
+                size_hint = {"total": None}
+
+                def first_half(done, total):
+                    size_hint["total"] = total
+                    on_progress(done // 2, total)
+
+                with self.pool.borrow(source) as conn:
+                    fetched = files.download(conn, source_dir, name, str(relay), True,
+                                             progress_cb=first_half, cancel_event=cancel_event)
+                size = fetched["size"]
+
+                def second_half(done, total):
+                    total = total or size
+                    on_progress((total + done) // 2, total)
+
+                with self.pool.borrow(target) as conn:
+                    result = files.upload(conn, str(relay), name, target_dir, False,
+                                          progress_cb=second_half, cancel_event=cancel_event, conflict=policy)
+                return {**result, "from": source_file, "size": result.get("size") or size}
+            finally:
+                shutil.rmtree(relay, ignore_errors=True)
+
+        return self._launch(target.id, work)
 
     def get(self, job_id: str) -> TransferJob | None:
         with self._lock:

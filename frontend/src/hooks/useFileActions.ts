@@ -13,7 +13,11 @@ type UseFileActionsOptions = {
   clearInspected: () => void
   setPaneSelection: (pane: PaneId, names: string[]) => void
   reloadPane: (pane: PaneId) => void
+  /** Sol panelde uzak bağlantı açıksa onun oturumu: sol panel işlemleri bu sunucuya gider. */
+  leftSessionId?: number | null
 }
+
+type Target = { side: 'local' | 'remote'; sessionId?: number }
 
 function deleteTitle(entries: FileEntry[]) {
   if (entries.length > 1) return `${entries.length} öğeyi sil`
@@ -34,7 +38,12 @@ function subject(entries: FileEntry[]) {
  * "Kalıcı olarak sil" doğrudan siler. Uzak sunucularda çöp kutusu olmadığından silme kalıcıdır.
  */
 export function useFileActions(options: UseFileActionsOptions) {
-  const { localPath, remotePath, isConnected, inspectedPath, openConfirm, openPrompt, clearInspected, setPaneSelection, reloadPane } = options
+  const { localPath, remotePath, isConnected, inspectedPath, openConfirm, openPrompt, clearInspected, setPaneSelection, reloadPane, leftSessionId } = options
+
+  /** Panelin gerçek hedefi: sol panel uzak bağlantıdaysa yerel değil uzak işlem yapılır. */
+  const targetOf = useCallback((pane: PaneId): Target => (
+    pane === 'local' && leftSessionId != null ? { side: 'remote', sessionId: leftSessionId } : { side: pane }
+  ), [leftSessionId])
 
   /** `done`: aynı diyalogda ilk deneme bazı öğeleri zaten silmiş olabilir; ikinci eylem onları atlar. */
   const removeEntries = useCallback(async (pane: PaneId, entries: FileEntry[], permanent: boolean, done: Set<string>) => {
@@ -42,7 +51,9 @@ export function useFileActions(options: UseFileActionsOptions) {
       for (const item of entries) {
         if (done.has(item.path)) continue
         try {
-          await api.deleteEntry(pane, item.path, permanent)
+          const target = targetOf(pane)
+          if (target.sessionId !== undefined) await api.deleteEntry(target.side, item.path, permanent, target.sessionId)
+          else await api.deleteEntry(target.side, item.path, permanent)
         } catch (error) {
           // Zaten yoksa (ör. önceki denemede taşındıysa) hedefe ulaşılmıştır.
           if (!(error instanceof ApiError && error.status === 404)) throw error
@@ -55,11 +66,12 @@ export function useFileActions(options: UseFileActionsOptions) {
       setPaneSelection(pane, [])
       reloadPane(pane)
     }
-  }, [clearInspected, inspectedPath, reloadPane, setPaneSelection])
+  }, [clearInspected, inspectedPath, reloadPane, setPaneSelection, targetOf])
 
   const askDelete = useCallback((pane: PaneId, entries: FileEntry[], forcePermanent = false) => {
     if (!entries.length) return
-    const toTrash = pane === 'local' && !forcePermanent
+    const remoteTarget = targetOf(pane).side === 'remote'
+    const toTrash = !remoteTarget && !forcePermanent
     const what = subject(entries)
     const done = new Set<string>()
     if (toTrash) {
@@ -76,14 +88,14 @@ export function useFileActions(options: UseFileActionsOptions) {
     }
     openConfirm({
       title: deleteTitle(entries),
-      message: pane === 'remote'
+      message: remoteTarget
         ? `${what} sunucudan kalıcı olarak silinecek. Uzak sunucularda çöp kutusu yoktur; bu işlem geri alınamaz.`
         : `${what} kalıcı olarak silinecek. Bu işlem geri alınamaz.`,
       confirmLabel: 'Kalıcı olarak sil',
       busyLabel: 'Siliniyor',
       action: () => removeEntries(pane, entries, true, done),
     })
-  }, [openConfirm, removeEntries])
+  }, [openConfirm, removeEntries, targetOf])
 
   const askCreateFolder = useCallback((pane: PaneId) => {
     const parentPath = pane === 'local' ? localPath : (isConnected ? remotePath : null)
@@ -94,12 +106,14 @@ export function useFileActions(options: UseFileActionsOptions) {
       confirmLabel: 'Oluştur',
       placeholder: 'Yeni klasör',
       action: async (name) => {
-        await api.mkdir(pane, parentPath, name)
+        const target = targetOf(pane)
+        if (target.sessionId !== undefined) await api.mkdir(target.side, parentPath, name, target.sessionId)
+        else await api.mkdir(target.side, parentPath, name)
         setPaneSelection(pane, [name])
         reloadPane(pane)
       },
     })
-  }, [isConnected, localPath, openPrompt, reloadPane, remotePath, setPaneSelection])
+  }, [isConnected, localPath, openPrompt, reloadPane, remotePath, setPaneSelection, targetOf])
 
   const askRename = useCallback((pane: PaneId, entry: FileEntry) => {
     openPrompt({
@@ -109,13 +123,15 @@ export function useFileActions(options: UseFileActionsOptions) {
       confirmLabel: 'Kaydet',
       action: async (newName) => {
         if (newName === entry.name) return
-        await api.renameEntry(pane, entry.path, newName)
+        const target = targetOf(pane)
+        if (target.sessionId !== undefined) await api.renameEntry(target.side, entry.path, newName, target.sessionId)
+        else await api.renameEntry(target.side, entry.path, newName)
         setPaneSelection(pane, [newName])
         if (inspectedPath === entry.path) clearInspected()
         reloadPane(pane)
       },
     })
-  }, [clearInspected, inspectedPath, openPrompt, reloadPane, setPaneSelection])
+  }, [clearInspected, inspectedPath, openPrompt, reloadPane, setPaneSelection, targetOf])
 
   const askCreateZip = useCallback((entries: FileEntry[]) => {
     if (!localPath || !entries.length) return

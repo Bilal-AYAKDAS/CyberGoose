@@ -1,4 +1,4 @@
-import { useRef, useState, type DragEvent, type MouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useRef, useState, type DragEvent, type MouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import type { DirectoryState } from '../hooks/useDirectory'
 import type { ConnectionProfile, ConnectionStatus, FileEntry, PaneId } from '../types'
 import { connectionLabel } from '../utils/formatters'
@@ -36,6 +36,10 @@ type FileManagerViewProps = {
   /** Windows Gezgini'nden uzak panele bırakılan dosya ve klasörlerin yerel yolları. */
   onDropExternal?: (paths: string[]) => void
   onQuickConnect?: () => void
+  /** Sol panel uzak bağlantıdaysa: etiket yerine kaynak seçici, kök adı ve tablo etiketi. */
+  leftTag?: ReactNode
+  leftRemoteLabel?: string
+  leftRootLabel?: string
 }
 
 const DRAG_TYPE = 'application/x-cybergoose-transfer'
@@ -67,7 +71,7 @@ const MAX_FRACTION = 0.75
  * ve seçim tonu (bg-selected / bg-selected-inactive) söyler.
  */
 export function FileManagerView(props: FileManagerViewProps) {
-  const { local, remote, drives, connection, connectionStatus, focusedPane, selection, onFocusPane, onSelect, onOpen, onNavigate, onConnect, onNewConnection, onContextMenu, onBackgroundMenu, onDropTransfer, onDropExternal, onQuickConnect } = props
+  const { local, remote, drives, connection, connectionStatus, focusedPane, selection, onFocusPane, onSelect, onOpen, onNavigate, onConnect, onNewConnection, onContextMenu, onBackgroundMenu, onDropTransfer, onDropExternal, onQuickConnect, leftTag, leftRemoteLabel, leftRootLabel } = props
   const [fraction, setFraction] = useState(0.5)
   const [dropTarget, setDropTarget] = useState<PaneId | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -209,20 +213,21 @@ export function FileManagerView(props: FileManagerViewProps) {
       <section
         ref={(node) => { paneRefs.current.local = node }}
         className={`cg-pane ${focusedPane === 'local' ? 'is-focused' : ''} ${dropTarget === 'local' ? 'is-drop-target' : ''}`}
-        aria-label="Yerel panel"
+        aria-label={leftRemoteLabel ? `${leftRemoteLabel} paneli (sol)` : 'Yerel panel'}
         aria-busy={local.loading}
         {...paneEvents('local')}
       >
         <PathBar
-          tag={<ProtocolTag local />}
+          tag={leftTag ?? <ProtocolTag local />}
           crumbs={local.crumbs}
+          rootLabel={leftRootLabel}
           path={local.path}
-          drives={drives}
+          drives={leftRemoteLabel ? undefined : drives}
           editSignal={local.editSignal}
           onNavigate={(path) => onNavigate('local', path)}
           onRefresh={local.reload}
         />
-        {renderBody('local', local, 'Yerel dosyalar')}
+        {renderBody('local', local, leftRemoteLabel ? `${leftRemoteLabel} dosyaları` : 'Yerel dosyalar')}
       </section>
 
       <div

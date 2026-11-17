@@ -8,6 +8,7 @@ import { ConnectionModal } from './components/ConnectionModal'
 import { ContextMenu, type MenuItem } from './components/ContextMenu'
 import { FileInspector } from './components/FileInspector'
 import { FileManagerView } from './components/FileManagerView'
+import { LeftSourcePicker } from './components/LeftSourcePicker'
 import { Icon } from './components/Icon'
 import { Notice } from './components/Notice'
 import { PromptDialog } from './components/PromptDialog'
@@ -26,7 +27,8 @@ import { useSettings } from './hooks/useSettings'
 import { useTheme } from './hooks/useTheme'
 import { useUpdateCheck } from './hooks/useUpdateCheck'
 import { useTransferQueue } from './hooks/useTransferQueue'
-import { api, type HostKeyInfo } from './services/apiClient'
+import { ApiError, api, hostKeyOf, type HostKeyInfo } from './services/apiClient'
+import { connectionLabel } from './utils/formatters'
 import type { ConnectionProfile, FileEntry, FolderBookmark, PaneId } from './types'
 
 // Seyrek açılan katmanlar ayrı parçalara bölünür: açılış paketi küçülür (xterm.js yalnızca
@@ -71,6 +73,11 @@ function App({ onReady }: { onReady?: () => void }) {
   const [drives, setDrives] = useState<string[]>([])
   const [localPath, setLocalPath] = useState<string | null>(null)
   const [remotePath, setRemotePath] = useState('/')
+  /** Sol panelde açık ikinci uzak bağlantı (uzaktan uzağa aktarım); null ise sol panel yereldir. */
+  const [leftRemote, setLeftRemote] = useState<{ connection: ConnectionProfile; sessionId: number } | null>(null)
+  const [leftRemotePath, setLeftRemotePath] = useState('/')
+  const [leftConnecting, setLeftConnecting] = useState<string | null>(null)
+  const leftSessionId = leftRemote?.sessionId ?? null
   const [focusedPane, setFocusedPane] = useState<PaneId>('local')
   const [selection, setSelection] = useState<Record<PaneId, string[]>>({ local: [], remote: [] })
   const [query, setQuery] = useState('')
@@ -95,9 +102,11 @@ function App({ onReady }: { onReady?: () => void }) {
   const navigate = useCallback((pane: PaneId, path: string) => {
     setSelection((current) => ({ ...current, [pane]: [] }))
     setQuery('')
-    if (pane === 'local') setLocalPath(path)
-    else setRemotePath(path)
-  }, [])
+    if (pane === 'local') {
+      if (leftSessionId !== null) setLeftRemotePath(path)
+      else setLocalPath(path)
+    } else setRemotePath(path)
+  }, [leftSessionId])
 
   const setPaneSelection = useCallback((pane: PaneId, names: string[]) => {
     setSelection((current) => ({ ...current, [pane]: names }))
@@ -169,7 +178,15 @@ function App({ onReady }: { onReady?: () => void }) {
   })
 
   // ---------------------------------------------------------------- klasörler ve seçimler
-  const local = useDirectory('local', localPath, true)
+  const local = useDirectory(
+    leftRemote ? 'remote' : 'local',
+    leftRemote ? leftRemotePath : localPath,
+    true,
+    leftRemote ? `side-${leftRemote.sessionId}` : undefined,
+    leftRemote?.sessionId,
+  )
+  /** Gerçek yerel klasör: sol panel uzak bağlantıdayken yok. */
+  const localDir = leftRemote ? null : local.path
   const remote = useDirectory('remote', remotePath, isConnected, sessionId)
   const { showHidden } = settings
 
@@ -223,8 +240,8 @@ function App({ onReady }: { onReady?: () => void }) {
 
   // ---------------------------------------------------------------- yer imleri ve transferler
   const { bookmarks, bookmarksError, bookmarksOpen, setBookmarksOpen, addBookmark, deleteBookmark } = useBookmarks()
-  const { transfers, queueOpen, activeTransfer, activeCount, setQueueOpen, enqueueMany, enqueueFolders, enqueueRelative, cancelTransfer, retryTransfer, retryAll, resolveConflicts, removeTransfer, clearFinished } = useTransferQueue({
-    localPath: local.path,
+  const { transfers, queueOpen, activeTransfer, activeCount, setQueueOpen, enqueueMany, enqueueFolders, enqueueRelative, enqueueCopy, cancelTransfer, retryTransfer, retryAll, resolveConflicts, removeTransfer, clearFinished } = useTransferQueue({
+    localPath: localDir,
     remotePath,
     activeConnection: isConnected ? activeConnection : null,
     sessionId,
@@ -236,6 +253,23 @@ function App({ onReady }: { onReady?: () => void }) {
   })
 
   const enqueueSelected = useCallback(async (entries: FileEntry[], direction: 'upload' | 'download') => {
+    if (leftRemote) {
+      // Sol panel uzak bağlantıda: iki sunucu arasında kopya (upload: sol → sağ, download: sağ → sol).
+      if (!entries.length) return
+      if (sessionId === null || !activeConnection || !remote.path || !local.path) {
+        setRemoteNotice({ tone: 'warn', title: 'Uzaktan uzağa aktarım için sağ panelde de bir bağlantı açın.' })
+        return
+      }
+      const left = { dir: local.path, sessionId: leftRemote.sessionId, label: connectionLabel(leftRemote.connection), pane: 'local' as const }
+      const right = { dir: remote.path, sessionId, label: connectionLabel(activeConnection), pane: 'remote' as const }
+      try {
+        if (direction === 'upload') await enqueueCopy(entries, left, right)
+        else await enqueueCopy(entries, right, left)
+      } catch (error) {
+        setRemoteNotice({ tone: 'error', title: messageOf(error, 'Aktarıma eklenemedi') })
+      }
+      return
+    }
     const filesOnly = entries.filter((entry) => entry.kind === 'file')
     const foldersOnly = entries.filter((entry) => entry.kind === 'folder')
     if (filesOnly.length) enqueueMany(filesOnly, direction)
@@ -245,7 +279,7 @@ function App({ onReady }: { onReady?: () => void }) {
     } catch (error) {
       setRemoteNotice({ tone: 'error', title: messageOf(error, 'Klasör aktarıma eklenemedi') })
     }
-  }, [enqueueFolders, enqueueMany])
+  }, [activeConnection, enqueueCopy, enqueueFolders, enqueueMany, leftRemote, local.path, remote.path, sessionId])
 
   /** Windows Gezgini'nden uzak panele bırakılan yollar: her birini yerelde sorgulayıp kuyruğa ekler. */
   const enqueueExternal = useCallback(async (paths: string[]) => {
@@ -259,7 +293,7 @@ function App({ onReady }: { onReady?: () => void }) {
   }, [enqueueSelected])
 
   const currentFolder = focusedPane === 'local'
-    ? (local.path ? { label: local.crumbs.at(-1)?.name || local.path, path: local.path, connectionId: null } : null)
+    ? (localDir ? { label: local.crumbs.at(-1)?.name || localDir, path: localDir, connectionId: null } : null)
     : (isConnected && remote.path && activeConnection?.saved ? { label: remote.crumbs.at(-1)?.name === '/' ? activeConnection.name : remote.crumbs.at(-1)?.name ?? remote.path, path: remote.path, connectionId: activeConnection.id } : null)
 
   // ---------------------------------------------------------------- FileZilla içe aktarma
@@ -275,6 +309,48 @@ function App({ onReady }: { onReady?: () => void }) {
       setRemoteNotice({ tone: 'error', title: messageOf(error, 'FileZilla dosyası içe aktarılamadı') })
     }
   }, [loadConnections])
+
+  // ---------------------------------------------------------------- sol panel kaynağı (uzaktan uzağa)
+  const switchLeftSource = useCallback(async (value: string) => {
+    const previous = leftRemote
+    if (value === 'local') {
+      setLeftRemote(null)
+      setSelection((current) => ({ ...current, local: [] }))
+      if (previous) await api.disconnectSide(previous.sessionId).catch(() => undefined)
+      return
+    }
+    const connection = connections.find((item) => item.id === value)
+    if (!connection) return
+    const attempt = async (trustHostKey?: string) => {
+      setLeftConnecting(connection.id)
+      try {
+        const opened = await api.connectSide({
+          type: connection.type,
+          connectionId: connection.saved ? connection.id : undefined,
+          clientId: connection.id,
+          trustHostKey,
+        })
+        if (previous) await api.disconnectSide(previous.sessionId).catch(() => undefined)
+        setLeftRemote({ connection, sessionId: opened.sessionId })
+        setLeftRemotePath('/')
+        setSelection((current) => ({ ...current, local: [] }))
+        focusPane('local')
+      } catch (error) {
+        const hostKey = hostKeyOf(error)
+        if (hostKey && !trustHostKey) {
+          handleHostKey(hostKey, () => attempt(hostKey.fingerprint))
+          return
+        }
+        const hint = error instanceof ApiError && (error.code === 'password_required' || error.code === 'key_passphrase_required')
+          ? ' Parolayı kaydedin ya da önce sağ panelden bağlanın.'
+          : ''
+        setRemoteNotice({ tone: 'error', title: `${connection.name} sol panelde açılamadı: ${messageOf(error, 'Bağlantı kurulamadı')}${hint}` })
+      } finally {
+        setLeftConnecting(null)
+      }
+    }
+    await attempt()
+  }, [connections, focusPane, handleHostKey, leftRemote])
 
   // ---------------------------------------------------------------- yerel dosyayı aç / göster / arşivi çıkar
   const openLocalPath = useCallback(async (path: string) => {
@@ -317,6 +393,7 @@ function App({ onReady }: { onReady?: () => void }) {
 
   const { askDelete, askCreateFolder, askRename, askCreateZip } = useFileActions({
     localPath: local.path,
+    leftSessionId,
     remotePath: remote.path,
     isConnected,
     inspectedPath: overlays.inspected?.path ?? null,
@@ -327,9 +404,12 @@ function App({ onReady }: { onReady?: () => void }) {
     reloadPane,
   })
 
+  /** Sol paneldeki uzak dosyanın detayları sağ oturumdan okunamaz; yalnızca klasörler açılır. */
+  const inspectable = (pane: PaneId) => !(pane === 'local' && leftRemote)
+
   const openEntry = (pane: PaneId, entry: FileEntry) => {
     if (entry.kind === 'folder') navigate(pane, entry.path)
-    else setOverlay({ inspected: entry })
+    else if (inspectable(pane)) setOverlay({ inspected: entry })
   }
 
   const canUpload = Boolean(selectedLocalEntries.length > 0 && isConnected && remote.path)
@@ -343,11 +423,17 @@ function App({ onReady }: { onReady?: () => void }) {
   const fileMenu = (pane: PaneId, entry: FileEntry, event: MouseEvent) => {
     const paneSelections = pane === 'local' ? selectedLocalEntries : selectedRemoteEntries
     const targets = paneSelections.some((item) => item.name === entry.name) ? paneSelections : [entry]
-    const transferItem: MenuItem = pane === 'local'
-      ? { label: targets.length > 1 ? `Yükle (${targets.length})` : entry.kind === 'folder' ? 'Klasörü yükle' : 'Yükle', onSelect: () => { void enqueueSelected(targets, 'upload') }, disabled: !isConnected, hint: 'Ctrl+U' }
-      : { label: targets.length > 1 ? `İndir (${targets.length})` : entry.kind === 'folder' ? 'Klasörü indir' : 'İndir', onSelect: () => { void enqueueSelected(targets, 'download') }, hint: 'Ctrl+D' }
-    const zipItem: MenuItem[] = pane === 'local' ? [{ label: targets.length > 1 ? `Zip arşivi oluştur (${targets.length})` : 'Zip arşivi oluştur', onSelect: () => askCreateZip(targets) }] : []
-    const deleteLabel = pane === 'local' ? "Geri Dönüşüm Kutusu'na taşı" : 'Sil'
+    const count = targets.length > 1 ? ` (${targets.length})` : ''
+    const transferItem: MenuItem = leftRemote
+      ? (pane === 'local'
+        ? { label: `Sağ panele kopyala${count}`, onSelect: () => { void enqueueSelected(targets, 'upload') }, disabled: !isConnected, hint: 'Ctrl+U' }
+        : { label: `Sol panele kopyala${count}`, onSelect: () => { void enqueueSelected(targets, 'download') }, hint: 'Ctrl+D' })
+      : pane === 'local'
+        ? { label: targets.length > 1 ? `Yükle (${targets.length})` : entry.kind === 'folder' ? 'Klasörü yükle' : 'Yükle', onSelect: () => { void enqueueSelected(targets, 'upload') }, disabled: !isConnected, hint: 'Ctrl+U' }
+        : { label: targets.length > 1 ? `İndir (${targets.length})` : entry.kind === 'folder' ? 'Klasörü indir' : 'İndir', onSelect: () => { void enqueueSelected(targets, 'download') }, hint: 'Ctrl+D' }
+    const leftIsRemote = pane === 'local' && Boolean(leftRemote)
+    const zipItem: MenuItem[] = pane === 'local' && !leftIsRemote ? [{ label: targets.length > 1 ? `Zip arşivi oluştur (${targets.length})` : 'Zip arşivi oluştur', onSelect: () => askCreateZip(targets) }] : []
+    const deleteLabel = pane === 'local' && !leftIsRemote ? "Geri Dönüşüm Kutusu'na taşı" : 'Sil'
     const items: MenuItem[] = targets.length > 1
       ? [
         transferItem,
@@ -355,11 +441,12 @@ function App({ onReady }: { onReady?: () => void }) {
         { label: `${deleteLabel} (${targets.length})`, onSelect: () => askDelete(pane, targets), danger: true, hint: 'Del' },
       ]
       : [
-        entry.kind === 'folder'
-          ? { label: 'Aç', onSelect: () => navigate(pane, entry.path), hint: 'Enter' }
-          : { label: 'Detaylar', onSelect: () => setOverlay({ inspected: entry }), hint: 'Enter' },
+        ...(entry.kind === 'folder'
+          ? [{ label: 'Aç', onSelect: () => navigate(pane, entry.path), hint: 'Enter' }]
+          : leftIsRemote ? [] : [{ label: 'Detaylar', onSelect: () => setOverlay({ inspected: entry }), hint: 'Enter' }]),
         ...(() => {
-          if (entry.kind !== 'file') return []
+          // Sol paneldeki uzak bağlantıda düzenleyiciler ve yerel eylemler yok (yalnızca kopya, ad, sil).
+          if (entry.kind !== 'file' || leftIsRemote) return []
           const lower = entry.name.toLowerCase()
           const isXlsx = lower.endsWith('.xlsx')
           const isCsv = lower.endsWith('.csv')
@@ -531,7 +618,9 @@ function App({ onReady }: { onReady?: () => void }) {
   const selectBookmark = (bookmark: FolderBookmark) => {
     setBookmarksOpen(false)
     if (bookmark.connectionId === null) {
-      navigate('local', bookmark.path)
+      if (leftRemote) void switchLeftSource('local')
+      setLocalPath(bookmark.path)
+      setSelection((current) => ({ ...current, local: [] }))
       focusPane('local')
       return
     }
@@ -548,7 +637,7 @@ function App({ onReady }: { onReady?: () => void }) {
         canUpload={canUpload}
         canDownload={canDownload}
         canCreateFolder={canCreateFolder}
-        canInspect={Boolean(focusedSelection && focusedSelection.kind === 'file')}
+        canInspect={Boolean(focusedSelection && focusedSelection.kind === 'file' && inspectable(focusedPane))}
         canDelete={Boolean(focusedSelections.length)}
         terminalOpen={showTerminalDrawer}
         quickOpen={overlays.quickConnect}
@@ -567,10 +656,10 @@ function App({ onReady }: { onReady?: () => void }) {
         onToggleHidden={toggleHidden}
         onToggleBookmarks={() => setBookmarksOpen((open) => !open)}
         onQueryChange={setQuery}
-        canCompare={Boolean(isConnected && local.path && remote.path)}
+        canCompare={Boolean(isConnected && localDir && remote.path)}
         onCompare={() => setOverlay({ compare: true })}
         onDeepSearch={() => {
-          const path = focusedPane === 'local' ? local.path : (isConnected ? remote.path : null)
+          const path = focusedPane === 'local' ? localDir : (isConnected ? remote.path : null)
           if (path && query.trim()) setOverlay({ search: { side: focusedPane, path, query: query.trim() } })
         }}
       />
@@ -585,7 +674,12 @@ function App({ onReady }: { onReady?: () => void }) {
           activeConnectionId={activeId}
           statusOf={statusOf}
           loadError={connectionsError}
-          onLocalSelect={() => { navigate('local', homePath ?? ''); focusPane('local') }}
+          onLocalSelect={() => {
+            if (leftRemote) void switchLeftSource('local')
+            setLocalPath(homePath ?? '')
+            setSelection((current) => ({ ...current, local: [] }))
+            focusPane('local')
+          }}
           onConnectionSelect={(connection) => { void openConnection(connection) }}
           onConnectionMenu={connectionMenu}
           onBookmarkSelect={selectBookmark}
@@ -624,7 +718,7 @@ function App({ onReady }: { onReady?: () => void }) {
             onSelect={(pane, names, primary) => {
               focusPane(pane)
               setPaneSelection(pane, names)
-              if (overlays.inspected && primary?.kind === 'file') setOverlay({ inspected: primary })
+              if (overlays.inspected && primary?.kind === 'file' && inspectable(pane)) setOverlay({ inspected: primary })
             }}
             onOpen={openEntry}
             onNavigate={navigate}
@@ -639,6 +733,16 @@ function App({ onReady }: { onReady?: () => void }) {
               else void enqueueSelected(visibleRemote.filter((entry) => names.includes(entry.name)), 'download')
             }}
             onDropExternal={(paths) => { void enqueueExternal(paths) }}
+            leftTag={(
+              <LeftSourcePicker
+                connections={connections}
+                value={leftConnecting ?? leftRemote?.connection.id ?? 'local'}
+                busy={leftConnecting !== null}
+                onChange={(value) => { void switchLeftSource(value) }}
+              />
+            )}
+            leftRemoteLabel={leftRemote?.connection.name}
+            leftRootLabel={leftRemote ? connectionLabel(leftRemote.connection) : undefined}
           />
         </div>
         {bookmarksOpen && (
@@ -724,15 +828,15 @@ function App({ onReady }: { onReady?: () => void }) {
             onClose={() => setOverlay({ settings: false })}
           />
         )}
-        {overlays.compare && local.path && remote.path && (
+        {overlays.compare && localDir && remote.path && (
           <CompareModal
-            localPath={local.path}
+            localPath={localDir}
             remotePath={remote.path}
             sessionId={sessionId}
             onSync={(rows, direction) => enqueueRelative(
               rows.map((row) => ({ relativeDir: row.relativeDir, name: row.name, size: direction === 'upload' ? row.localSize : row.remoteSize })),
               direction,
-              local.path as string,
+              localDir,
               remote.path as string,
               true,
             )}

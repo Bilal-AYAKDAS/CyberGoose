@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, api, type TransferJobStatus } from '../services/apiClient'
-import type { ConflictPolicy, ConnectionProfile, FileEntry, TransferItem } from '../types'
+import type { ConflictPolicy, ConnectionProfile, FileEntry, PaneId, TransferItem } from '../types'
 import { connectionLabel } from '../utils/formatters'
 
 const messageOf = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback)
@@ -26,6 +26,9 @@ type UseTransferQueueOptions = {
 }
 
 export type RelativeFile = { relativeDir: string; name: string; size: number | null }
+
+/** Uzaktan uzağa kopyanın bir ucu: klasör, backend oturumu, görünen ad ve panel. */
+export type CopyEndpoint = { dir: string; sessionId: number; label: string; pane: PaneId }
 
 export function joinLocal(base: string, rel: string) {
   if (!rel) return base
@@ -107,15 +110,19 @@ export function useTransferQueue({
   }, [overwriteDefault])
 
   const enqueueMany = useCallback((entries: FileEntry[], direction: TransferItem['direction']) => {
-    if (!localPath || !remotePath || !activeConnection) return
+    if (!remotePath || !activeConnection) return
+    // Gezgin'den bırakılan dosyalar sol panel uzak bağlantıdayken de yüklenebilir (klasörleri kendi yolunda).
+    if (!localPath && direction !== 'upload') return
     const label = connectionLabel(activeConnection)
     const added = entries
       .filter((entry) => entry.kind === 'file')
       .map((entry) => {
         // Gezgin'den bırakılan dosyalarda klasör o anki yerel klasör değil, dosyanın kendi klasörüdür.
         const sourceDir = direction === 'upload' && entry.source === 'local' ? parentOf(entry.path) ?? localPath : localPath
+        if (!sourceDir) return null
         return makeItem(entry.name, direction, sourceDir, remotePath, entry.size, label, sessionId, activeConnection.id)
       })
+      .filter((item): item is TransferItem => item !== null)
     if (!added.length) return
     setTransfers((items) => [...items, ...added])
     setQueueOpen(true)
@@ -195,6 +202,59 @@ export function useTransferQueue({
     return added.length
   }, [activeConnection, makeItem, sessionId])
 
+  /**
+   * Uzaktan uzağa kopya (ör. SFTP → SFTP, FTP → Google Drive). Klasörler kaynak oturumda
+   * dosya listesine açılır, hedefte klasör yapısı kurulur. Hata olursa yükselir.
+   */
+  const enqueueCopy = useCallback(async (entries: FileEntry[], source: CopyEndpoint, target: CopyEndpoint) => {
+    const make = (name: string, sourceDir: string, targetDir: string, size: number | null): TransferItem => ({
+      id: crypto.randomUUID(),
+      name,
+      direction: 'copy',
+      localDir: '',
+      remoteDir: targetDir,
+      sourceDir,
+      sourceSessionId: source.sessionId,
+      sessionId: target.sessionId,
+      targetPane: target.pane,
+      from: `${source.label}:${sourceDir}`,
+      to: `${target.label}:${targetDir}`,
+      size,
+      transferred: 0,
+      overwrite: overwriteDefault === 'overwrite',
+      conflict: overwriteDefault === 'ask' ? undefined : overwriteDefault,
+      status: 'queued',
+    })
+    const added: TransferItem[] = entries
+      .filter((entry) => entry.kind === 'file')
+      .map((entry) => make(entry.name, source.dir, target.dir, entry.size))
+    for (const folder of entries) {
+      if (folder.kind !== 'folder') continue
+      const plan = await api.planFolderTransfer('remote', folder.path, source.sessionId)
+      const baseTarget = joinRemote(target.dir, plan.rootName)
+      await ensureFolder('remote', target.dir, plan.rootName, target.sessionId)
+      const created = new Set<string>([''])
+      for (const item of plan.files) {
+        if (item.relativeDir && !created.has(item.relativeDir)) {
+          let acc = ''
+          for (const part of item.relativeDir.split('/')) {
+            const parentRel = acc
+            acc = acc ? `${acc}/${part}` : part
+            if (created.has(acc)) continue
+            await ensureFolder('remote', joinRemote(baseTarget, parentRel), part, target.sessionId)
+            created.add(acc)
+          }
+        }
+        added.push(make(item.name, joinRemote(folder.path, item.relativeDir), joinRemote(baseTarget, item.relativeDir), item.size))
+      }
+    }
+    if (added.length) {
+      setTransfers((items) => [...items, ...added])
+      setQueueOpen(true)
+    }
+    return added.length
+  }, [overwriteDefault])
+
   const enqueue = useCallback((entry: FileEntry, direction: TransferItem['direction']) => {
     enqueueMany([entry], direction)
   }, [enqueueMany])
@@ -242,16 +302,28 @@ export function useTransferQueue({
       let jobId = item.jobId
       let started: TransferJobStatus | null = null
       if (!jobId) {
-        started = await api.startTransfer({
-          direction: item.direction,
-          name: item.name,
-          localDir: item.localDir,
-          remoteDir: item.remoteDir,
-          overwrite: item.overwrite,
-          conflict: item.conflict && item.conflict !== 'ask' ? item.conflict : undefined,
-          sessionId: item.sessionId ?? undefined,
-          resume: item.resume,
-        })
+        const conflict = item.conflict && item.conflict !== 'ask' ? item.conflict : undefined
+        started = await api.startTransfer(item.direction === 'copy'
+          ? {
+            direction: 'copy',
+            name: item.name,
+            sourceDir: item.sourceDir ?? '',
+            targetDir: item.remoteDir,
+            sourceSessionId: item.sourceSessionId ?? -1,
+            sessionId: item.sessionId ?? -1,
+            overwrite: item.overwrite,
+            conflict,
+          }
+          : {
+            direction: item.direction,
+            name: item.name,
+            localDir: item.localDir,
+            remoteDir: item.remoteDir,
+            overwrite: item.overwrite,
+            conflict,
+            sessionId: item.sessionId ?? undefined,
+            resume: item.resume,
+          })
         jobId = started.id
         patch(item.id, { jobId })
       }
@@ -264,7 +336,8 @@ export function useTransferQueue({
           skipped: latest.result?.skipped ? latest.result.skipReason ?? 'Atlandı' : undefined,
           renamedTo: latest.result?.renamedTo ?? undefined,
         })
-        if (item.direction === 'upload') reloaders.current.reloadRemote()
+        const targetPane = item.direction === 'copy' ? item.targetPane : item.direction === 'upload' ? 'remote' : 'local'
+        if (targetPane === 'remote') reloaders.current.reloadRemote()
         else reloaders.current.reloadLocal()
       } else if (latest.status === 'cancelled') {
         patch(item.id, { status: 'cancelled', finishedAt: Date.now(), jobId: undefined })
@@ -394,6 +467,7 @@ export function useTransferQueue({
     enqueueMany,
     enqueueFolders,
     enqueueRelative,
+    enqueueCopy,
     cancelTransfer,
     retryTransfer,
     retryAll,

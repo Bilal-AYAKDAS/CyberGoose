@@ -105,7 +105,7 @@ export function TransferQueue({ items, open, onToggle, onRetry, onRetryAll, onRe
             const status = statusText(item)
             return (
               <article className="cg-job" key={item.id} aria-label={item.name}>
-                <Icon name={item.direction === 'upload' ? 'upload' : 'download'} />
+                <Icon name={item.direction === 'copy' ? 'compare' : item.direction === 'upload' ? 'upload' : 'download'} />
                 <div className="what">
                   <div className="file">{item.name}</div>
                   <div className="route" title={`${item.from} → ${item.to}`}>{item.from} → {item.to}</div>

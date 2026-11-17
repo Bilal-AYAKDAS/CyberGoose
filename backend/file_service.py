@@ -536,6 +536,37 @@ def _sftp_put_from(conn, local_file: Path, remote_file: str, offset: int, report
             report(done)
 
 
+def relay_target_policy(target_conn, target_dir: str, name: str, conflict, overwrite: bool, source_mtime):
+    """Uzaktan uzağa kopyada hedefteki çakışmayı kaynak indirilmeden önce çözer.
+
+    Dönüş: (yükleme için çakışma kararı, atlandıysa sonuç). `source_mtime()` yalnızca
+    "daha yeniyse" kararında çağrılır. Böylece atlanacak büyük dosya boşuna indirilmez.
+    """
+    provider = provider_of(target_conn)
+    name = _validate_name(name)
+    target_file = posixpath.join(normalize_remote(target_dir), name)
+    policy = _policy(conflict, overwrite)
+    if policy == 'overwrite' or not _remote_file_exists(provider, target_conn, target_file):
+        return ('overwrite' if policy == 'overwrite' else 'fail'), None
+    if policy == 'fail':
+        raise FileServiceError('Hedefte aynı adlı dosya var', 409, 'exists')
+    if policy == 'skip':
+        return None, _skipped(name, None, target_file, 'Hedefte vardı, atlandı')
+    if policy == 'newer':
+        source_time = source_mtime()
+        target_time = _remote_mtime(provider, target_conn, target_file)
+        if source_time is None or target_time is None:
+            return None, _skipped(name, None, target_file, 'Tarih okunamadı, atlandı')
+        if source_time <= target_time + MTIME_TOLERANCE:
+            return None, _skipped(name, None, target_file, 'Hedef daha yeni ya da aynı, atlandı')
+        return 'overwrite', None
+    return 'rename', None
+
+
+def remote_mtime(conn, path: str) -> float | None:
+    return _remote_mtime(provider_of(conn), conn, normalize_remote(path))
+
+
 def upload(
     conn,
     local_dir: str,

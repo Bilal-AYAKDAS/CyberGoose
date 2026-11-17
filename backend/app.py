@@ -38,7 +38,7 @@ CORS(app, origins=["http://localhost:5175", "http://127.0.0.1:5175", "null"], al
 
 db = DbMyFtp()
 sessions = SessionManager()
-transfers = TransferManager(sessions)
+transfers = TransferManager(sessions, relay_dir=DATA_DIR / "relay")
 terminals = TerminalManager(sessions)
 tunnels = TunnelManager(sessions)
 external_edits = EditWatcher(transfers, DATA_DIR / "edits")
@@ -135,10 +135,11 @@ def update_session():
     return jsonify(sessions.session_info())
 
 
-@app.post("/api/connect")
-def connect():
-    """Bağlantı oturum kilidi dışında kurulur: OAuth izni veya yavaş sunucu paneli kilitlemez."""
-    data = body()
+def _open_connection(data):
+    """İstekteki (ya da kayıtlı) bilgilerle bağlantı açar.
+
+    Dönüş: (bağlantı, tür, bağlantı kimliği, factory) ya da hazır bir HTTP yanıtı (hata / Dropbox izni bekleniyor).
+    """
     raw_type = str(data.get("type") or "").strip()
     normalized = raw_type.lower()
     connection_id = data.get("connectionId")
@@ -186,9 +187,49 @@ def connect():
         return error(f"Desteklenmeyen bağlantı türü: {raw_type or '-'}", 400)
 
     resolved_id = str(connection_id) if connection_id is not None else data.get("clientId")
+    return connection, conn_type, resolved_id, factory
+
+
+@app.post("/api/connect")
+def connect():
+    """Bağlantı oturum kilidi dışında kurulur: OAuth izni veya yavaş sunucu paneli kilitlemez."""
+    opened = _open_connection(body())
+    if not isinstance(opened, tuple) or len(opened) != 4:
+        return opened
+    connection, conn_type, resolved_id, factory = opened
     with sessions.lock:
         session_id = sessions.activate(connection, conn_type, resolved_id, factory=factory)
     return jsonify({"connected": True, "type": conn_type, "sessionId": session_id})
+
+
+@app.post("/api/side/connect")
+def side_connect():
+    """Sol panel için ikinci bir uzak bağlantı (uzaktan uzağa aktarım).
+
+    Sağ paneldeki etkin oturumu değiştirmez. Listeleme ve dosya işlemleri `sessionId` ile
+    aktarım bağlantı havuzu üzerinden yapılır.
+    """
+    data = body()
+    opened = _open_connection(data)
+    if not isinstance(opened, tuple) or len(opened) != 4:
+        if isinstance(opened, tuple) and len(opened) == 2 and opened[1] == 202:
+            return error(
+                "Dropbox izni henüz verilmemiş. Önce sağ panelden Dropbox'a bir kez bağlanıp izin verin.",
+                409, "auth_required",
+            )
+        return opened
+    connection, conn_type, resolved_id, factory = opened
+    session_id = sessions.open_side(connection, conn_type, resolved_id, factory=factory)
+    return jsonify({"connected": True, "type": conn_type, "sessionId": session_id})
+
+
+@app.post("/api/side/disconnect")
+def side_disconnect():
+    data = body()
+    closed = sessions.close_side(data.get("sessionId"))
+    if closed:
+        transfers.pool.close_session(closed)
+    return jsonify({"connected": False})
 
 
 @app.post("/api/disconnect")
@@ -312,10 +353,19 @@ def local_sheet_write():
 
 # ---------------------------------------------------------------- uzak dosyalar
 
+def _with_session(data, func):
+    """`sessionId` verilmişse (sol paneldeki ikinci bağlantı) aktarım bağlantısıyla, yoksa paneldeki
+    etkin bağlantıyla `func(conn)` çalıştırır."""
+    if data.get("sessionId") not in (None, ""):
+        return transfers.run_with_connection(data["sessionId"], func)
+    with sessions.lock:
+        return func(sessions.state.connection)
+
+
 @app.post("/api/remote/list")
 def remote_list():
-    with sessions.lock:
-        return jsonify(files.list_remote(sessions.state.connection, body().get("path")))
+    data = body()
+    return jsonify(_with_session(data, lambda conn: files.list_remote(conn, data.get("path"))))
 
 
 @app.post("/api/remote/info")
@@ -370,13 +420,27 @@ def remote_sheet_write():
 def start_transfer():
     data = body()
     direction, name = data.get("direction"), data.get("name")
+    if data.get("conflict") and data["conflict"] not in files.CONFLICT_POLICIES:
+        return error("Çakışma kararı " + ", ".join(files.CONFLICT_POLICIES) + " olmalı", 400)
+    if direction == "copy":
+        # Uzaktan uzağa: kaynak oturumdan indirilip hedef oturuma yüklenir.
+        source_dir, target_dir = data.get("sourceDir"), data.get("targetDir")
+        if not (name and source_dir and target_dir):
+            return error("Dosya adı, kaynak ve hedef klasör gerekli", 400)
+        if data.get("sourceSessionId") in (None, "") or data.get("sessionId") in (None, ""):
+            return error("Kaynak ve hedef oturum gerekli", 400)
+        job = transfers.start_copy(
+            name, source_dir, target_dir,
+            source_session_id=data["sourceSessionId"], target_session_id=data["sessionId"],
+            overwrite=bool(data.get("overwrite")),
+            conflict=str(data["conflict"]) if data.get("conflict") else None,
+        )
+        return jsonify(job.to_dict()), 202
     local_dir, remote_dir = data.get("localDir"), data.get("remoteDir")
     if not (name and local_dir and remote_dir):
         return error("Dosya adı, yerel ve uzak klasör gerekli", 400)
     if direction not in ("upload", "download"):
-        return error("Yön 'upload' veya 'download' olmalı", 400)
-    if data.get("conflict") and data["conflict"] not in files.CONFLICT_POLICIES:
-        return error("Çakışma kararı " + ", ".join(files.CONFLICT_POLICIES) + " olmalı", 400)
+        return error("Yön 'upload', 'download' veya 'copy' olmalı", 400)
     job = transfers.start(
         direction, name, local_dir, remote_dir,
         overwrite=bool(data.get("overwrite")),
@@ -496,8 +560,7 @@ def rename():
     if side == "local":
         return jsonify(files.rename_local(path, name))
     if side == "remote":
-        with sessions.lock:
-            return jsonify(files.rename_remote(sessions.state.connection, path, name))
+        return jsonify(_with_session(data, lambda conn: files.rename_remote(conn, path, name)))
     return error("Taraf 'local' veya 'remote' olmalı", 400)
 
 
@@ -511,8 +574,7 @@ def delete():
         result = files.delete_local(path, permanent=bool(data.get("permanent")))
         return jsonify({"deleted": path, **result})
     if side == "remote":
-        with sessions.lock:
-            files.delete_remote(sessions.state.connection, path)
+        _with_session(data, lambda conn: files.delete_remote(conn, path))
         return jsonify({"deleted": path, "trashed": False})
     return error("Taraf 'local' veya 'remote' olmalı", 400)
 
