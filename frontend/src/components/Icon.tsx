@@ -2,7 +2,7 @@
  * CyberGoose ikon seti: 24 ızgara, 1.5 çizgi, yuvarlak uç, dolgusuz; arayüzde 16px.
  * Renk `currentColor` ile gelir (varsayılan text-muted, klasör text-accent).
  * İlk 14 ikon tasarım sistemindeki assets/Icons ile birebir aynıdır; close, plus, sun, moon,
- * info ve alert aynı ızgara ve çizgiyle çizilmiş tamamlayıcı ikonlardır.
+ * info, alert, bolt, eye ve sliders aynı ızgara ve çizgiyle çizilmiş tamamlayıcı ikonlardır.
  */
 const paths = {
   folder: 'M3 6v12a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V9a1 1 0 0 0-1-1h-8.6L9.7 5.3A1 1 0 0 0 9 5H4a1 1 0 0 0-1 1Z',
@@ -27,6 +27,11 @@ const paths = {
   alert: 'M12 4 3 20h18L12 4Zm0 6v4m0 3h.01',
   terminal: 'M4 17l6-5-6-5M12 19h8',
   monitor: 'M3 5h18v12H3zM8 21h8M12 17v4',
+  bolt: 'M13 3 5 14h6l-1 7 8-11h-6l1-7Z',
+  eye: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12ZM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z',
+  'eye-off': 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12ZM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM4 4l16 16',
+  'folder-plus': 'M3 6v12a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V9a1 1 0 0 0-1-1h-8.6L9.7 5.3A1 1 0 0 0 9 5H4a1 1 0 0 0-1 1ZM12 11v5M9.5 13.5h5',
+  sliders: 'M4 6h9m4 0h3M4 12h3m4 0h9M4 18h11m4 0h1M15 4v4M9 10v4M17 16v4',
 } as const
 
 export type IconName = keyof typeof paths

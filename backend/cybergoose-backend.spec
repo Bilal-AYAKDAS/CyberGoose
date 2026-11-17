@@ -15,7 +15,8 @@ hiddenimports = []
 hiddenimports += collect_submodules("providers")  # sağlayıcılar route içinde geç yüklenir
 hiddenimports += collect_submodules("services")
 hiddenimports += collect_submodules("keyring.backends")
-hiddenimports += ["waitress", "msal", "flask_sock", "simple_websocket", "wsproto"]
+hiddenimports += collect_submodules("send2trash")  # Windows geri dönüşüm kutusu arka ucu
+hiddenimports += ["msal", "flask_sock", "simple_websocket", "wsproto"]
 
 a = Analysis(
     ["app.py"],

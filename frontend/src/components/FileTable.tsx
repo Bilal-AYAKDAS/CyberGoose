@@ -19,12 +19,14 @@ type FileTableProps = {
   onContextMenu?: (entry: FileEntry, event: MouseEvent) => void
   /** Boş klasör metni. */
   emptyText?: string
+  /** Tab: odağı diğer panele taşı; taşıyamazsa false döner ve Tab olağan biçimde ilerler. */
+  onTabOut?: () => boolean
 }
 
-const columns: { key: SortKey; label: string; numeric?: boolean }[] = [
+const columns: { key: SortKey; label: string; numeric?: boolean; className?: string }[] = [
   { key: 'name', label: 'Ad' },
-  { key: 'size', label: 'Boyut', numeric: true },
-  { key: 'modified', label: 'Değiştirilme' },
+  { key: 'size', label: 'Boyut', numeric: true, className: 'col-size' },
+  { key: 'modified', label: 'Değiştirilme', className: 'col-date' },
 ]
 
 function compare(a: FileEntry, b: FileEntry, key: SortKey): number {
@@ -38,7 +40,7 @@ function compare(a: FileEntry, b: FileEntry, key: SortKey): number {
  * Ad sans; boyut ve tarih mono, text-muted, tabular. Klasörler önce listelenir.
  * Sıralama yalnızca aktif sütunda text-accent bir okla gösterilir.
  */
-export function FileTable({ pane, label, entries, selected, onSelect, onOpen, onOpenParent, onContextMenu, emptyText = 'Bu klasör boş' }: FileTableProps) {
+export function FileTable({ pane, label, entries, selected, onSelect, onOpen, onOpenParent, onContextMenu, emptyText = 'Bu klasör boş', onTabOut }: FileTableProps) {
   const [sort, setSort] = useState<SortState>({ key: 'name', direction: 'asc' })
   const anchorRef = useRef<string | null>(null)
 
@@ -84,6 +86,10 @@ export function FileTable({ pane, label, entries, selected, onSelect, onOpen, on
       onSelect(sorted.map((item) => item.name))
       return
     }
+    if (event.key === 'Tab' && !event.shiftKey && !event.ctrlKey && onTabOut) {
+      if (onTabOut()) event.preventDefault()
+      return
+    }
     if (event.key === 'Enter') {
       onOpen(sorted[index])
       return
@@ -126,7 +132,7 @@ export function FileTable({ pane, label, entries, selected, onSelect, onOpen, on
   return (
     <div className="cg-list-scroll">
       <table className="cg-list" aria-label={label}>
-        <colgroup><col style={{ width: 28 }} /><col /><col style={{ width: 92 }} /><col style={{ width: 140 }} /></colgroup>
+        <colgroup><col style={{ width: 28 }} /><col /><col className="col-size" style={{ width: 92 }} /><col className="col-date" style={{ width: 140 }} /></colgroup>
         <thead>
           <tr>
             <th className="cg-check-col">
@@ -144,7 +150,7 @@ export function FileTable({ pane, label, entries, selected, onSelect, onOpen, on
               return (
                 <th
                   key={column.key}
-                  className={column.numeric ? 'num' : undefined}
+                  className={[column.numeric ? 'num' : '', column.className ?? ''].join(' ').trim() || undefined}
                   aria-sort={active ? (sort.direction === 'asc' ? 'ascending' : 'descending') : undefined}
                 >
                   <button className="cg-th-btn" onClick={() => toggleSort(column.key)}>
@@ -161,8 +167,8 @@ export function FileTable({ pane, label, entries, selected, onSelect, onOpen, on
             <tr className="cg-parent-row" tabIndex={-1} onDoubleClick={onOpenParent} onKeyDown={(event) => { if (event.key === 'Enter') onOpenParent() }} aria-label="Üst klasör">
               <td className="cg-check-col" />
               <td><span className="cg-name"><Icon name="folder" className="is-dir" /><span className="cg-name-text">..</span></span></td>
-              <td className="meta num" />
-              <td className="meta" />
+              <td className="meta num col-size" />
+              <td className="meta col-date" />
             </tr>
           )}
           {sorted.map((entry, index) => {
@@ -174,7 +180,7 @@ export function FileTable({ pane, label, entries, selected, onSelect, onOpen, on
                 aria-selected={isSelected}
                 data-entry
                 tabIndex={index === focusIndex ? 0 : -1}
-                draggable={Boolean(pane && entry.kind === 'file')}
+                draggable={Boolean(pane)}
                 onDragStart={pane ? (event) => {
                   const names = isSelected ? selected : [entry.name]
                   event.dataTransfer.setData('application/x-cybergoose-transfer', JSON.stringify({ source: pane, names }))
@@ -204,11 +210,11 @@ export function FileTable({ pane, label, entries, selected, onSelect, onOpen, on
                 <td>
                   <span className="cg-name">
                     <Icon name={entry.kind === 'folder' ? 'folder' : 'file'} className={entry.kind === 'folder' ? 'is-dir' : undefined} />
-                    <span className="cg-name-text">{entry.name}</span>
+                    <span className="cg-name-text" title={entry.name}>{entry.name}</span>
                   </span>
                 </td>
-                <td className="meta num">{entry.kind === 'folder' ? '—' : formatFileSize(entry.size)}</td>
-                <td className="meta">{formatDate(entry.modified)}</td>
+                <td className="meta num col-size">{entry.kind === 'folder' ? '—' : formatFileSize(entry.size)}</td>
+                <td className="meta col-date">{formatDate(entry.modified)}</td>
               </tr>
             )
           })}

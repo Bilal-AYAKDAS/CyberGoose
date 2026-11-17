@@ -35,7 +35,7 @@ describe('status helpers', () => {
   })
 
   it('counts active, queued and failed transfers', () => {
-    const base: Omit<TransferItem, 'id' | 'status'> = { name: 'a', direction: 'upload', localDir: 'C:/', remoteDir: '/', from: 'a', to: 'b', size: 1 }
+    const base: Omit<TransferItem, 'id' | 'status'> = { name: 'a', direction: 'upload', localDir: 'C:/', remoteDir: '/', sessionId: null, from: 'a', to: 'b', size: 1 }
     expect(queueSummary([
       { ...base, id: '1', status: 'transferring' },
       { ...base, id: '2', status: 'queued' },

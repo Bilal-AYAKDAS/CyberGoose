@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { api, apiToken, wsBase } from '../services/apiClient'
+import { api, apiToken, hostKeyOf, wsBase, type HostKeyInfo } from '../services/apiClient'
 import type { ConnectionProfile } from '../types'
+import { HostKeyNotice } from './HostKeyNotice'
 import { Icon } from './Icon'
 import type { DirectTerminalTarget } from './RemoteAccessModal'
 
@@ -14,6 +15,10 @@ type TerminalDrawerProps = {
   onOpenTunnels?: () => void
   onClose: () => void
 }
+
+const terminalPalette = (theme: 'dark' | 'light') => (theme === 'dark'
+  ? { background: '#17191C', foreground: '#ECEAE4', cursor: '#FF6A1F', selectionBackground: '#3B2518' }
+  : { background: '#FAF9F6', foreground: '#16181B', cursor: '#A63A05', selectionBackground: '#FFE4D4' })
 
 type TabItem = { id: number; label: string }
 
@@ -40,8 +45,12 @@ function TerminalPane({
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const socketRef = useRef<WebSocket | null>(null)
+  const termRef = useRef<Terminal | null>(null)
+  const themeRef = useRef(theme)
   const [status, setStatus] = useState<'connecting' | 'connected' | 'closed' | 'error'>('connecting')
   const [errorText, setErrorText] = useState<string | null>(null)
+  const [hostKey, setHostKey] = useState<HostKeyInfo | null>(null)
+  const [trustedKey, setTrustedKey] = useState<string | undefined>(undefined)
 
   const targetKey = directTarget
     ? `direct:${directTarget.host}:${directTarget.port}:${directTarget.username}:${directTarget.connectionId ?? ''}`
@@ -67,10 +76,9 @@ function TerminalPane({
       cursorBlink: true,
       fontFamily: '"IBM Plex Mono", ui-monospace, monospace',
       fontSize: 13,
-      theme: theme === 'dark'
-        ? { background: '#121518', foreground: '#E6E8EB', cursor: '#F97316' }
-        : { background: '#FAF8F5', foreground: '#1D2024', cursor: '#EA580C' },
+      theme: terminalPalette(themeRef.current),
     })
+    termRef.current = term
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(container)
@@ -104,6 +112,7 @@ function TerminalPane({
         username: directTarget.username,
         password: directTarget.password,
         keyPath: directTarget.keyPath,
+        trustHostKey: trustedKey,
       })
       : api.openTerminal(term.cols, term.rows)
 
@@ -148,10 +157,10 @@ function TerminalPane({
         }
       })
       .catch((error: unknown) => {
-        if (!disposed) {
-          setStatus('error')
-          setErrorText(error instanceof Error ? error.message : 'Terminal açılamadı')
-        }
+        if (disposed) return
+        setStatus('error')
+        setHostKey(hostKeyOf(error))
+        setErrorText(error instanceof Error ? error.message : 'Terminal açılamadı')
       })
 
     return () => {
@@ -162,14 +171,26 @@ function TerminalPane({
       socketRef.current = null
       if (termId) void api.closeTerminal(termId).catch(() => undefined)
       term.dispose()
+      termRef.current = null
     }
-  }, [targetKey, directTarget, theme])
+  }, [targetKey, directTarget, trustedKey])
+
+  // Tema değişince yalnızca renkler güncellenir; açık SSH oturumu kapanmaz.
+  useEffect(() => {
+    themeRef.current = theme
+    if (termRef.current) termRef.current.options.theme = terminalPalette(theme)
+  }, [theme])
 
   return (
-    <div style={{ display: active ? 'flex' : 'none', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-      {status !== 'connected' && (
-        <div className="cg-caption" style={{ padding: '2px 10px' }}>
+    <div className="cg-terminal-pane" hidden={!active}>
+      {status !== 'connected' && !hostKey && (
+        <div className="cg-caption cg-terminal-status">
           {status === 'connecting' ? 'Bağlanıyor...' : status === 'closed' ? 'Oturum kapandı' : (errorText ?? 'Hata')}
+        </div>
+      )}
+      {hostKey && (
+        <div className="cg-terminal-status">
+          <HostKeyNotice info={hostKey} onTrust={() => { setHostKey(null); setStatus('connecting'); setTrustedKey(hostKey.fingerprint) }} />
         </div>
       )}
       <div ref={hostRef} className="cg-terminal-body" />
@@ -178,7 +199,7 @@ function TerminalPane({
 }
 
 /**
- * PuTTY benzeri çok sekmeli SSH terminali: snippet çubuğu ve tünel kısayolu içerir.
+ * Çok sekmeli SSH terminali: hazır komut çubuğu ve tünel kısayolu içerir.
  */
 export function TerminalDrawer({ connection, directTarget, theme, onOpenTunnels, onClose }: TerminalDrawerProps) {
   const baseLabel = directTarget

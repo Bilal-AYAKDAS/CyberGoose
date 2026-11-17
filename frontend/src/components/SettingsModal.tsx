@@ -1,16 +1,54 @@
-import type { Theme } from '../hooks/useTheme'
+import type { ReactNode } from 'react'
+import type { ThemePreference } from '../hooks/useTheme'
 import type { AppSettings } from '../hooks/useSettings'
 import { Modal } from './Modal'
 
 type SettingsModalProps = {
-  theme: Theme
-  onToggleTheme: () => void
+  themePreference: ThemePreference
+  onThemeChange: (next: ThemePreference) => void
   settings: AppSettings
   onChange: (next: AppSettings) => void
   onClose: () => void
 }
 
-export function SettingsModal({ theme, onToggleTheme, settings, onChange, onClose }: SettingsModalProps) {
+function Segmented<T extends string | number>({ label, value, options, onChange }: {
+  label: string
+  value: T
+  options: { value: T; label: string }[]
+  onChange: (value: T) => void
+}) {
+  return (
+    <div className="cg-field wide">
+      <span className="cg-field-label">{label}</span>
+      <div className="cg-seg" role="radiogroup" aria-label={label}>
+        {options.map((option) => (
+          <button
+            key={String(option.value)}
+            role="radio"
+            aria-checked={value === option.value}
+            className={value === option.value ? 'is-on' : undefined}
+            onClick={() => onChange(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function Check({ checked, onChange, children }: { checked: boolean; onChange: (value: boolean) => void; children: ReactNode }) {
+  return (
+    <div className="cg-field wide">
+      <label className="cg-check-row">
+        <input type="checkbox" className="cg-check" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+        <span>{children}</span>
+      </label>
+    </div>
+  )
+}
+
+export function SettingsModal({ themePreference, onThemeChange, settings, onChange, onClose }: SettingsModalProps) {
   return (
     <Modal
       title="Ayarlar"
@@ -18,41 +56,40 @@ export function SettingsModal({ theme, onToggleTheme, settings, onChange, onClos
       footer={<button className="cg-btn cg-btn-primary" onClick={onClose}>Tamam</button>}
     >
       <div className="body">
-        <div className="cg-field wide">
-          <span className="cg-field-label">Tema</span>
-          <div className="cg-seg" role="radiogroup" aria-label="Tema seçimi">
-            <button role="radio" aria-checked={theme === 'dark'} className={theme === 'dark' ? 'is-on' : undefined} onClick={() => { if (theme !== 'dark') onToggleTheme() }}>Graphite (Koyu)</button>
-            <button role="radio" aria-checked={theme === 'light'} className={theme === 'light' ? 'is-on' : undefined} onClick={() => { if (theme !== 'light') onToggleTheme() }}>Paper (Açık)</button>
-          </div>
-        </div>
-
-        <div className="cg-field wide">
-          <span className="cg-field-label">Tablo yoğunluğu</span>
-          <div className="cg-seg" role="radiogroup" aria-label="Tablo yoğunluğu">
-            <button role="radio" aria-checked={settings.density === 'comfortable'} className={settings.density === 'comfortable' ? 'is-on' : undefined} onClick={() => onChange({ ...settings, density: 'comfortable' })}>Rahat (28px)</button>
-            <button role="radio" aria-checked={settings.density === 'compact'} className={settings.density === 'compact' ? 'is-on' : undefined} onClick={() => onChange({ ...settings, density: 'compact' })}>Sıkışık (22px)</button>
-          </div>
-        </div>
-
-        <div className="cg-field wide">
-          <span className="cg-field-label">Hedef dosya çakışması</span>
-          <div className="cg-seg" role="radiogroup" aria-label="Hedef dosya çakışması">
-            <button role="radio" aria-checked={settings.overwriteDefault === 'ask'} className={settings.overwriteDefault === 'ask' ? 'is-on' : undefined} onClick={() => onChange({ ...settings, overwriteDefault: 'ask' })}>Her zaman sor</button>
-            <button role="radio" aria-checked={settings.overwriteDefault === 'overwrite'} className={settings.overwriteDefault === 'overwrite' ? 'is-on' : undefined} onClick={() => onChange({ ...settings, overwriteDefault: 'overwrite' })}>Üzerine yaz</button>
-          </div>
-        </div>
-
-        <div className="cg-field wide">
-          <label className="cg-check-row">
-            <input
-              type="checkbox"
-              className="cg-check"
-              checked={settings.notifications}
-              onChange={(event) => onChange({ ...settings, notifications: event.target.checked })}
-            />
-            <span>Aktarım tamamlandığında masaüstü bildirimi göster</span>
-          </label>
-        </div>
+        <Segmented
+          label="Tema"
+          value={themePreference}
+          options={[
+            { value: 'system', label: 'Sistem' },
+            { value: 'dark', label: 'Graphite (Koyu)' },
+            { value: 'light', label: 'Paper (Açık)' },
+          ]}
+          onChange={onThemeChange}
+        />
+        <Segmented
+          label="Tablo yoğunluğu"
+          value={settings.density}
+          options={[{ value: 'comfortable', label: 'Rahat' }, { value: 'compact', label: 'Sıkışık' }]}
+          onChange={(density) => onChange({ ...settings, density })}
+        />
+        <Segmented
+          label="Hedef dosya çakışması"
+          value={settings.overwriteDefault}
+          options={[{ value: 'ask', label: 'Her zaman sor' }, { value: 'overwrite', label: 'Üzerine yaz' }]}
+          onChange={(overwriteDefault) => onChange({ ...settings, overwriteDefault })}
+        />
+        <Segmented
+          label="Aynı anda aktarım"
+          value={settings.maxParallel}
+          options={[1, 2, 3, 4].map((value) => ({ value, label: String(value) }))}
+          onChange={(maxParallel) => onChange({ ...settings, maxParallel })}
+        />
+        <Check checked={settings.showHidden} onChange={(showHidden) => onChange({ ...settings, showHidden })}>
+          Gizli dosyaları göster (Ctrl+H)
+        </Check>
+        <Check checked={settings.notifications} onChange={(notifications) => onChange({ ...settings, notifications })}>
+          Aktarımlar bitince masaüstü bildirimi göster
+        </Check>
       </div>
     </Modal>
   )

@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react'
-import { ApiError } from '../services/apiClient'
+import { ApiError, hostKeyOf, type HostKeyInfo } from '../services/apiClient'
 import type { ConnectionFormValues, ConnectionProfile, ConnectionType } from '../types'
 import { defaultPort, isCloud, protocolLabel } from '../utils/formatters'
+import { HostKeyNotice } from './HostKeyNotice'
 import { Modal } from './Modal'
 import { Notice } from './Notice'
 
@@ -24,7 +25,7 @@ type ConnectionModalProps = {
   /** Profili parolasız kaydeder (yeni veya düzenleme). */
   onSave: (values: ConnectionFormValues) => Promise<void>
   /** Bağlanır; yeni sunucu bağlantısını parolasız kaydeder. Dropbox izni bekliyorsa `pending` döner. */
-  onConnect: (values: ConnectionFormValues) => Promise<ConnectOutcome>
+  onConnect: (values: ConnectionFormValues, trustHostKey?: string) => Promise<ConnectOutcome>
   onClose: () => void
 }
 
@@ -45,6 +46,7 @@ export function ConnectionModal({ initial, onSave, onConnect, onClose }: Connect
   const [errors, setErrors] = useState<FieldErrors>({})
   const [connectError, setConnectError] = useState<{ message: string; code?: string } | null>(null)
   const [pending, setPending] = useState<string | null>(null)
+  const [hostKey, setHostKey] = useState<HostKeyInfo | null>(null)
   const storedPassword = Boolean(initial?.hasPassword)
   const [isConnecting, setIsConnecting] = useState(false)
   const cloud = isCloud(values.type)
@@ -53,6 +55,7 @@ export function ConnectionModal({ initial, onSave, onConnect, onClose }: Connect
     setValues((current) => ({ ...current, [key]: value }))
     setErrors((current) => ({ ...current, [key]: undefined }))
     setConnectError(null)
+    setHostKey(null)
   }
 
   const selectType = (type: ConnectionType) => {
@@ -97,12 +100,13 @@ export function ConnectionModal({ initial, onSave, onConnect, onClose }: Connect
     }
   }
 
-  const connect = async () => {
+  const connect = async (trustHostKey?: string) => {
     if (isConnecting || !validate(true)) return
     setIsConnecting(true)
     setPending(null)
+    setHostKey(null)
     try {
-      const outcome = await onConnect(values)
+      const outcome = await (trustHostKey ? onConnect(values, trustHostKey) : onConnect(values))
       if (outcome && 'pending' in outcome) {
         setPending(outcome.pending)
         setIsConnecting(false)
@@ -110,7 +114,9 @@ export function ConnectionModal({ initial, onSave, onConnect, onClose }: Connect
       }
       onClose()
     } catch (error) {
-      setConnectError(describe(error))
+      const key = hostKeyOf(error)
+      if (key && !trustHostKey) setHostKey(key)
+      else setConnectError(describe(error))
       setIsConnecting(false)
     }
   }
@@ -118,11 +124,11 @@ export function ConnectionModal({ initial, onSave, onConnect, onClose }: Connect
   const footer = <>
     <button className="cg-btn cg-btn-ghost" onClick={onClose}>Vazgeç</button>
     {!cloud && <button className="cg-btn" disabled={isConnecting} onClick={save}>Kaydet</button>}
-    <button className="cg-btn cg-btn-primary" disabled={isConnecting} onClick={connect}>{isConnecting ? 'Bağlanıyor' : 'Bağlan'}</button>
+    <button className="cg-btn cg-btn-primary" disabled={isConnecting} onClick={() => { void connect() }}>{isConnecting ? 'Bağlanıyor' : 'Bağlan'}</button>
   </>
 
   return (
-    <Modal title={initial ? 'Bağlantıyı düzenle' : 'Yeni bağlantı'} footer={footer} onClose={onClose} onSubmit={connect}>
+    <Modal title={initial ? 'Bağlantıyı düzenle' : 'Yeni bağlantı'} footer={footer} onClose={onClose} onSubmit={() => { void connect() }}>
       <div className="body">
         <div className="cg-field wide">
           <span className="cg-field-label" id="protocol-label">Protokol</span>
@@ -150,7 +156,7 @@ export function ConnectionModal({ initial, onSave, onConnect, onClose }: Connect
         {cloud ? (
           <div className="cg-field wide">
             <span className="cg-help">Hesap izni varsayılan tarayıcınızda açılır. İzin verdikten sonra bu pencereye dönün.</span>
-            <div><button className="cg-btn" disabled={isConnecting} onClick={connect}>Hesabı bağla</button></div>
+            <div><button className="cg-btn" disabled={isConnecting} onClick={() => { void connect() }}>Hesabı bağla</button></div>
           </div>
         ) : (
           <>
@@ -182,6 +188,11 @@ export function ConnectionModal({ initial, onSave, onConnect, onClose }: Connect
         {pending && (
           <div className="wide">
             <Notice title="İzin bekleniyor">{pending}</Notice>
+          </div>
+        )}
+        {hostKey && (
+          <div className="wide">
+            <HostKeyNotice info={hostKey} onTrust={() => { void connect(hostKey.fingerprint) }} onCancel={() => setHostKey(null)} />
           </div>
         )}
         {connectError && (

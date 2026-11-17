@@ -12,6 +12,7 @@ const localListing: DirectoryListing = {
   entries: [
     { name: 'Belgeler', kind: 'folder', size: null, modified: '2026-11-10T09:00:00', path: 'C:/Users/bilal/Belgeler' },
     { name: 'rapor.pdf', kind: 'file', size: 2_400_000, modified: '2026-11-12T10:00:00', path: 'C:/Users/bilal/rapor.pdf' },
+    { name: '.gizli', kind: 'file', size: 10, modified: '2026-11-12T10:00:00', path: 'C:/Users/bilal/.gizli', hidden: true },
   ],
 }
 
@@ -28,6 +29,7 @@ function mockBackend() {
   vi.spyOn(api, 'listLocal').mockResolvedValue(localListing)
   vi.spyOn(api, 'listRemote').mockResolvedValue(remoteListing)
   vi.spyOn(api, 'listBookmarks').mockResolvedValue([])
+  vi.spyOn(api, 'providers').mockResolvedValue({ dropbox: false, googledrive: true, onedrive: true })
   vi.spyOn(api, 'listConnections').mockResolvedValue([
     { id: 8, name: 'Rebex test', type: 'SFTP', host: 'test.rebex.net', port: '22', username: 'demo', hasPassword: true },
   ])
@@ -68,7 +70,7 @@ describe('CyberGoose application window', () => {
 
   it('connects a saved server with its stored password and lists the remote folder', async () => {
     const user = userEvent.setup()
-    const connect = vi.spyOn(api, 'connect').mockResolvedValue({ connected: true, type: 'SFTP' })
+    const connect = vi.spyOn(api, 'connect').mockResolvedValue({ connected: true, type: 'SFTP', sessionId: 1 })
     render(<App />)
     await user.click(await screen.findByRole('button', { name: /Rebex test/ }))
     expect(connect).toHaveBeenCalledWith(expect.objectContaining({ type: 'SFTP', connectionId: '8' }))
@@ -87,7 +89,7 @@ describe('CyberGoose application window', () => {
 
   it('downloads a remote file through the transfer API', async () => {
     const user = userEvent.setup()
-    vi.spyOn(api, 'connect').mockResolvedValue({ connected: true, type: 'SFTP' })
+    vi.spyOn(api, 'connect').mockResolvedValue({ connected: true, type: 'SFTP', sessionId: 1 })
     const startTransfer = vi.spyOn(api, 'startTransfer').mockResolvedValue({
       id: 'job-1',
       status: 'completed',
@@ -126,5 +128,97 @@ describe('CyberGoose application window', () => {
     expect(document.documentElement.dataset.theme).toBe('dark')
     await user.click(screen.getByRole('button', { name: 'Tema değiştir' }))
     expect(document.documentElement.dataset.theme).toBe('light')
+  })
+  it('hides hidden files until Ctrl+H toggles them', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    const table = await screen.findByRole('table', { name: 'Yerel dosyalar' })
+    await within(table).findByText('rapor.pdf')
+    expect(within(table).queryByText('.gizli')).not.toBeInTheDocument()
+    await user.keyboard('{Control>}h{/Control}')
+    expect(await within(table).findByText('.gizli')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Gizli dosyaları göster' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('moves local files to the recycle bin by default and deletes permanently on request', async () => {
+    const user = userEvent.setup()
+    const remove = vi.spyOn(api, 'deleteEntry').mockResolvedValue(undefined as never)
+    render(<App />)
+    const table = await screen.findByRole('table', { name: 'Yerel dosyalar' })
+    await user.click(await within(table).findByText('rapor.pdf'))
+    await user.keyboard('{Delete}')
+    const dialog = await screen.findByRole('dialog', { name: 'Dosyayı sil' })
+    expect(dialog).toHaveTextContent("Geri Dönüşüm Kutusu'na taşınacak")
+    await user.click(within(dialog).getByRole('button', { name: "Geri Dönüşüm Kutusu'na taşı" }))
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('local', 'C:/Users/bilal/rapor.pdf', false))
+
+    await user.click(await within(table).findByText('rapor.pdf'))
+    await user.keyboard('{Shift>}{Delete}{/Shift}')
+    const permanent = await screen.findByRole('dialog', { name: 'Dosyayı sil' })
+    expect(permanent).toHaveTextContent('kalıcı olarak silinecek')
+    await user.click(within(permanent).getByRole('button', { name: 'Kalıcı olarak sil' }))
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('local', 'C:/Users/bilal/rapor.pdf', true))
+  })
+
+  it('quick-connects without saving and binds transfers to the new session', async () => {
+    const user = userEvent.setup()
+    const connect = vi.spyOn(api, 'connect').mockResolvedValue({ connected: true, type: 'SFTP', sessionId: 7 })
+    const create = vi.spyOn(api, 'createConnection')
+    const startTransfer = vi.spyOn(api, 'startTransfer').mockResolvedValue({ id: 'job-9', status: 'completed', transferred: 379, total: 379, result: { name: 'readme.txt', size: 379, to: 'C:/Users/bilal/readme.txt' } })
+    render(<App />)
+    await screen.findByText('rapor.pdf')
+    await user.keyboard('{Control>}k{/Control}')
+    const bar = await screen.findByRole('search', { name: 'Hızlı bağlan' })
+    await user.type(within(bar).getByRole('textbox', { name: 'Sunucu' }), 'demo@test.rebex.net:2222')
+    await user.type(within(bar).getByLabelText('Parola'), 'gizli')
+    await user.click(within(bar).getByRole('button', { name: 'Bağlan' }))
+    await waitFor(() => expect(connect).toHaveBeenCalledWith(expect.objectContaining({ host: 'test.rebex.net', port: '2222', username: 'demo', clientId: 'quick' })))
+    expect(create).not.toHaveBeenCalled()
+    const table = await screen.findByRole('table', { name: 'demo@test.rebex.net dosyaları' })
+    await user.click(await within(table).findByText('readme.txt'))
+    await user.click(screen.getByRole('button', { name: 'İndir' }))
+    await waitFor(() => expect(startTransfer).toHaveBeenCalledWith(expect.objectContaining({ name: 'readme.txt', sessionId: 7 })))
+  })
+
+  it('asks the user to verify an unknown SFTP host key before trusting it', async () => {
+    const user = userEvent.setup()
+    const hostKeyError = new ApiError('anahtar ilk kez görülüyor', 409, 'host_key_unknown', { hostKey: { host: 'test.rebex.net', type: 'ssh-ed25519', fingerprint: 'SHA256:abc' } })
+    const connect = vi.spyOn(api, 'connect')
+      .mockRejectedValueOnce(hostKeyError)
+      .mockResolvedValueOnce({ connected: true, type: 'SFTP', sessionId: 2 })
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /Rebex test/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'Sunucu anahtarını doğrulayın' })
+    expect(dialog).toHaveTextContent('SHA256:abc')
+    await user.click(within(dialog).getByRole('button', { name: 'Güven ve bağlan' }))
+    await waitFor(() => expect(connect).toHaveBeenLastCalledWith(expect.objectContaining({ trustHostKey: 'SHA256:abc' })))
+    expect(await screen.findByRole('table', { name: 'Rebex test dosyaları' })).toBeInTheDocument()
+  })
+
+  it('explains how to set up a cloud account that is not configured', async () => {
+    const user = userEvent.setup()
+    const connect = vi.spyOn(api, 'connect')
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /Dropbox/ }))
+    expect(await screen.findByText(/DROPBOX_APP_KEY/)).toBeInTheDocument()
+    expect(connect).not.toHaveBeenCalled()
+  })
+  it('reloads the remote listing when switching servers at the same path', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(api, 'connect')
+      .mockResolvedValueOnce({ connected: true, type: 'SFTP', sessionId: 1 })
+      .mockResolvedValueOnce({ connected: true, type: 'SFTP', sessionId: 2 })
+    const listRemote = vi.spyOn(api, 'listRemote')
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /Rebex test/ }))
+    await screen.findByRole('table', { name: 'Rebex test dosyaları' })
+    expect(listRemote).toHaveBeenCalledTimes(1)
+    await user.keyboard('{Control>}k{/Control}')
+    const bar = await screen.findByRole('search', { name: 'Hızlı bağlan' })
+    await user.type(within(bar).getByRole('textbox', { name: 'Sunucu' }), 'demo@diger.example')
+    await user.type(within(bar).getByLabelText('Parola'), 'x')
+    await user.click(within(bar).getByRole('button', { name: 'Bağlan' }))
+    await screen.findByRole('table', { name: 'demo@diger.example dosyaları' })
+    await waitFor(() => expect(listRemote).toHaveBeenCalledTimes(2))
   })
 })

@@ -17,9 +17,15 @@ export function Modal({ title, footer, onClose, onSubmit, children }: ModalProps
   const dialogRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
+    // Kapanınca odak diyaloğu açan öğeye döner (klavye kullanıcısı yerini kaybetmesin).
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const dialog = dialogRef.current
-    const first = dialog?.querySelector<HTMLElement>('input:not([disabled])') ?? dialog?.querySelector<HTMLElement>('button:not([disabled])')
+    // Odak asla geri alınamaz bir eyleme düşmesin: önce işaretli öğe, sonra ilk alan.
+    const first = dialog?.querySelector<HTMLElement>('[data-autofocus]:not([disabled])')
+      ?? dialog?.querySelector<HTMLElement>('input:not([disabled])')
+      ?? dialog?.querySelector<HTMLElement>('button:not([disabled]):not(.cg-btn-danger)')
     first?.focus()
+    return () => { if (opener?.isConnected) opener.focus() }
   }, [])
 
   return (

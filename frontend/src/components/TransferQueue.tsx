@@ -78,7 +78,7 @@ export function TransferQueue({ items, open, onToggle, onRetry, onCancel, onRemo
       </div>
       {expanded && (
         <div className="cg-queue-list">
-          {!items.length && <p className="cg-help cg-queue-empty">Kuyrukta aktarım yok. Bir dosya seçip Yükle veya İndir'e basın.</p>}
+          {!items.length && <p className="cg-help cg-queue-empty">Kuyruk boş. Dosyaları paneller arasında ya da dosya yöneticinizden uzak panele sürükleyin veya seçip Yükle / İndir'e basın.</p>}
           {items.map((item) => {
             const status = statusText(item)
             return (

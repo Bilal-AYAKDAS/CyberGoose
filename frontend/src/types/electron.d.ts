@@ -6,11 +6,13 @@ declare global {
       platform: string
       openExternal: (url: string) => Promise<void>
       /** Başlık çubuğu overlay rengini ve pencere zeminini temaya göre günceller. */
-      setTheme?: (theme: 'dark' | 'light') => void
+      setTheme?: (theme: 'dark' | 'light', source?: 'dark' | 'light' | 'system') => void
       /** Yerel API hazır olunca adresi ve istek anahtarı; başlatılamazsa reddedilir. */
       backend?: () => Promise<{ base: string; token: string }>
       launchRdp?: (host: string, port?: number) => Promise<void>
       notify?: (title: string, body: string) => void
+      /** Gezgin'den sürüklenen dosyanın diskteki yolu (Electron webUtils). */
+      pathForFile?: (file: File) => string
     }
   }
 }

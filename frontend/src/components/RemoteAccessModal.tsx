@@ -39,7 +39,7 @@ function downloadRdpFile(host: string, port: string, username: string) {
 }
 
 /**
- * PuTTY benzeri SSH Terminali ve Windows Uzak Masaüstü (RDP) bağlantı penceresi.
+ * SSH terminali ve Windows Uzak Masaüstü (RDP) bağlantı penceresi.
  * Tasarım sistemindeki Modal + segmented kontrol + Graphite/Paper token'larını kullanır.
  */
 export function RemoteAccessModal({ initialMode, savedConnections, onOpenSsh, onClose }: RemoteAccessModalProps) {
@@ -127,7 +127,7 @@ export function RemoteAccessModal({ initialMode, savedConnections, onOpenSsh, on
 
   return (
     <Modal
-      title={mode === 'ssh' ? 'SSH Terminali (PuTTY)' : 'Uzak Masaüstü (RDP)'}
+      title={mode === 'ssh' ? 'SSH terminali' : 'Uzak Masaüstü (RDP)'}
       onClose={onClose}
       onSubmit={submit}
       footer={<>
@@ -152,13 +152,21 @@ export function RemoteAccessModal({ initialMode, savedConnections, onOpenSsh, on
 
         {serverProfiles.length > 0 && (
           <div className="cg-field wide">
-            <label htmlFor="ra-saved">Kayıtlı sunucudan doldur</label>
-            <select id="ra-saved" className="cg-input" value={selectedId} onChange={(event) => pickSaved(event.target.value)}>
-              <option value="">Manuel giriş</option>
+            <span className="cg-field-label" id="ra-saved-label">Kayıtlı sunucudan doldur</span>
+            <div className="cg-chips" role="radiogroup" aria-labelledby="ra-saved-label">
               {serverProfiles.map((item) => (
-                <option key={item.id} value={item.id}>{item.name} ({item.host})</option>
+                <button
+                  key={item.id}
+                  role="radio"
+                  aria-checked={selectedId === item.id}
+                  className={`cg-chip ${selectedId === item.id ? 'is-on' : ''}`}
+                  title={`${item.username ? `${item.username}@` : ''}${item.host}`}
+                  onClick={() => (selectedId === item.id ? setSelectedId('') : pickSaved(item.id))}
+                >
+                  {item.name}
+                </button>
               ))}
-            </select>
+            </div>
           </div>
         )}
 

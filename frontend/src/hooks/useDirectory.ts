@@ -17,9 +17,11 @@ const empty: DirectoryState = { path: null, parent: null, crumbs: [], entries: [
  * Bir paneldeki klasörü API'den yükler. `requestedPath` değişince ya da `reload()` çağrılınca
  * yeniden ister; yarışan isteklerde yalnızca sonuncusu uygulanır.
  */
-export function useDirectory(source: EntrySource, requestedPath: string | null, enabled: boolean) {
+export function useDirectory(source: EntrySource, requestedPath: string | null, enabled: boolean, scope?: number | string | null) {
   const [version, setVersion] = useState(0)
-  const requestKey = enabled ? `${source}:${requestedPath ?? ''}:${version}` : null
+  // `scope` (uzak oturum kimliği) değişince aynı yol da yeniden istenir: başka sunucuya geçince
+  // önceki sunucunun listesi görünmez ve işlemler yanlış yollara gitmez.
+  const requestKey = enabled ? `${source}:${scope ?? ''}:${requestedPath ?? ''}:${version}` : null
   const [result, setResult] = useState<{
     key: string
     path: string | null

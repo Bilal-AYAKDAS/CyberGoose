@@ -1,4 +1,4 @@
-import { useRef, useState, type MouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useRef, useState, type DragEvent, type MouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { DirectoryState } from '../hooks/useDirectory'
 import type { ConnectionProfile, ConnectionStatus, FileEntry, PaneId } from '../types'
 import { connectionLabel } from '../utils/formatters'
@@ -29,7 +29,33 @@ type FileManagerViewProps = {
   onConnect: (connection: ConnectionProfile) => void
   onNewConnection: () => void
   onContextMenu: (pane: PaneId, entry: FileEntry, event: MouseEvent) => void
+  /** Boş alana sağ tık (Yeni klasör, Yenile). */
+  onBackgroundMenu?: (pane: PaneId, event: MouseEvent) => void
+  /** Bir panelden ötekine sürüklenen öğeler. */
   onDropTransfer?: (targetPane: PaneId, names: string[]) => void
+  /** Windows Gezgini'nden uzak panele bırakılan dosya ve klasörlerin yerel yolları. */
+  onDropExternal?: (paths: string[]) => void
+  onQuickConnect?: () => void
+}
+
+const DRAG_TYPE = 'application/x-cybergoose-transfer'
+
+function readPaneDrop(event: DragEvent): { source: PaneId; names: string[] } | null {
+  const raw = event.dataTransfer.getData(DRAG_TYPE)
+  if (!raw) return null
+  try {
+    const payload = JSON.parse(raw) as { source: PaneId; names: string[] }
+    return Array.isArray(payload.names) && payload.names.length ? payload : null
+  } catch {
+    return null // Geçersiz sürükleme verisi yoksayılır.
+  }
+}
+
+/** Electron'da bırakılan dosyaların gerçek yolu preload üzerinden alınır (tarayıcıda yoktur). */
+function externalPaths(event: DragEvent): string[] {
+  const resolve = window.cyberGoose?.pathForFile
+  if (!resolve) return []
+  return Array.from(event.dataTransfer.files).map((file) => resolve(file)).filter((path): path is string => Boolean(path))
 }
 
 const MIN_FRACTION = 0.25
@@ -41,9 +67,62 @@ const MAX_FRACTION = 0.75
  * ve seçim tonu (bg-selected / bg-selected-inactive) söyler.
  */
 export function FileManagerView(props: FileManagerViewProps) {
-  const { local, remote, drives, connection, connectionStatus, focusedPane, selection, onFocusPane, onSelect, onOpen, onNavigate, onConnect, onNewConnection, onContextMenu, onDropTransfer } = props
+  const { local, remote, drives, connection, connectionStatus, focusedPane, selection, onFocusPane, onSelect, onOpen, onNavigate, onConnect, onNewConnection, onContextMenu, onBackgroundMenu, onDropTransfer, onDropExternal, onQuickConnect } = props
   const [fraction, setFraction] = useState(0.5)
+  const [dropTarget, setDropTarget] = useState<PaneId | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const paneRefs = useRef<Record<PaneId, HTMLElement | null>>({ local: null, remote: null })
+
+  /** Tab: odağı diğer panelin seçili (ya da ilk) satırına taşır. Satır yoksa Tab normal çalışır. */
+  const switchPane = (from: PaneId): boolean => {
+    const target = from === 'local' ? 'remote' : 'local'
+    const section = paneRefs.current[target]
+    const row = section?.querySelector<HTMLElement>('tr[data-entry][tabindex="0"]') ?? section?.querySelector<HTMLElement>('tr[data-entry]')
+    if (!row) return false
+    onFocusPane(target)
+    row.focus()
+    return true
+  }
+
+  const paneEvents = (pane: PaneId) => ({
+    onFocusCapture: () => onFocusPane(pane),
+    onMouseDown: () => onFocusPane(pane),
+    onContextMenu: (event: MouseEvent) => {
+      // Satırın kendi menüsü varsayılanı zaten engeller; burada yalnızca boş alan kalır.
+      if (event.defaultPrevented || !onBackgroundMenu) return
+      event.preventDefault()
+      onBackgroundMenu(pane, event)
+    },
+    onDragOver: (event: DragEvent) => {
+      const fromPane = event.dataTransfer.types.includes(DRAG_TYPE)
+      const fromExplorer = pane === 'remote' && event.dataTransfer.types.includes('Files') && Boolean(window.cyberGoose?.pathForFile)
+      if (pane === 'remote' && connectionStatus !== 'connected') return
+      if (!fromPane && !fromExplorer) return
+      event.preventDefault()
+      event.dataTransfer.dropEffect = 'copy'
+      if (dropTarget !== pane) setDropTarget(pane)
+    },
+    onDragLeave: (event: DragEvent) => {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTarget(null)
+    },
+    onDrop: (event: DragEvent) => {
+      setDropTarget(null)
+      if (pane === 'remote' && connectionStatus !== 'connected') return
+      const payload = readPaneDrop(event)
+      if (payload) {
+        event.preventDefault()
+        if (payload.source !== pane) onDropTransfer?.(pane, payload.names)
+        return
+      }
+      if (pane === 'remote') {
+        const paths = externalPaths(event)
+        if (paths.length) {
+          event.preventDefault()
+          onDropExternal?.(paths)
+        }
+      }
+    },
+  })
 
   const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     const container = containerRef.current
@@ -89,6 +168,7 @@ export function FileManagerView(props: FileManagerViewProps) {
           onOpen={(entry) => onOpen(pane, entry)}
           onOpenParent={data.parent ? () => onNavigate(pane, data.parent as string) : undefined}
           onContextMenu={(entry, event) => onContextMenu(pane, entry, event)}
+          onTabOut={() => switchPane(pane)}
           emptyText={data.entries.length ? 'Aramayla eşleşen öğe yok' : 'Bu klasör boş'}
         />
       </>
@@ -100,8 +180,12 @@ export function FileManagerView(props: FileManagerViewProps) {
       return (
         <div className="cg-empty">
           <span className="cg-display">Henüz bağlantı yok</span>
-          <span className="cg-help">Kenar çubuğundan bir bağlantı seçin ya da yeni bir tane ekleyin.</span>
-          <button className="cg-btn cg-btn-primary" onClick={onNewConnection}>Yeni bağlantı</button>
+          <span className="cg-help">Kenar çubuğundan bir bağlantı seçin, yeni bir tane ekleyin ya da kaydetmeden hızlı bağlanın.</span>
+          <span className="cg-empty-actions">
+            {/* Hızlı bağlan çubuğu açıkken turuncu buton oradadır; burada ikinci bir primary olmaz. */}
+            <button className={`cg-btn ${onQuickConnect ? 'cg-btn-primary' : ''}`} onClick={onNewConnection}>Yeni bağlantı</button>
+            {onQuickConnect && <button className="cg-btn" onClick={onQuickConnect}>Hızlı bağlan</button>}
+          </span>
         </div>
       )
     }
@@ -123,24 +207,11 @@ export function FileManagerView(props: FileManagerViewProps) {
       style={{ gridTemplateColumns: `minmax(0, ${fraction}fr) 1px minmax(0, ${1 - fraction}fr)` }}
     >
       <section
-        className={`cg-pane ${focusedPane === 'local' ? 'is-focused' : ''}`}
+        ref={(node) => { paneRefs.current.local = node }}
+        className={`cg-pane ${focusedPane === 'local' ? 'is-focused' : ''} ${dropTarget === 'local' ? 'is-drop-target' : ''}`}
         aria-label="Yerel panel"
         aria-busy={local.loading}
-        onFocusCapture={() => onFocusPane('local')}
-        onMouseDown={() => onFocusPane('local')}
-        onDragOver={(event) => {
-          if (event.dataTransfer.types.includes('application/x-cybergoose-transfer')) event.preventDefault()
-        }}
-        onDrop={(event) => {
-          const raw = event.dataTransfer.getData('application/x-cybergoose-transfer')
-          if (!raw) return
-          try {
-            const payload = JSON.parse(raw) as { source: PaneId; names: string[] }
-            if (payload.source === 'remote' && payload.names.length) onDropTransfer?.('local', payload.names)
-          } catch {
-            // Geçersiz sürükleme verisi yoksayılır.
-          }
-        }}
+        {...paneEvents('local')}
       >
         <PathBar
           tag={<ProtocolTag local />}
@@ -172,25 +243,11 @@ export function FileManagerView(props: FileManagerViewProps) {
       />
 
       <section
-        className={`cg-pane ${focusedPane === 'remote' ? 'is-focused' : ''}`}
+        ref={(node) => { paneRefs.current.remote = node }}
+        className={`cg-pane ${focusedPane === 'remote' ? 'is-focused' : ''} ${dropTarget === 'remote' ? 'is-drop-target' : ''}`}
         aria-label={connection ? `${connection.name} paneli` : 'Uzak panel'}
         aria-busy={remote.loading}
-        onFocusCapture={() => onFocusPane('remote')}
-        onMouseDown={() => onFocusPane('remote')}
-        onDragOver={(event) => {
-          if (connectionStatus === 'connected' && event.dataTransfer.types.includes('application/x-cybergoose-transfer')) event.preventDefault()
-        }}
-        onDrop={(event) => {
-          if (connectionStatus !== 'connected') return
-          const raw = event.dataTransfer.getData('application/x-cybergoose-transfer')
-          if (!raw) return
-          try {
-            const payload = JSON.parse(raw) as { source: PaneId; names: string[] }
-            if (payload.source === 'local' && payload.names.length) onDropTransfer?.('remote', payload.names)
-          } catch {
-            // Geçersiz sürükleme verisi yoksayılır.
-          }
-        }}
+        {...paneEvents('remote')}
       >
         <PathBar
           tag={<ProtocolTag connection={connection} status={connectionStatus} />}

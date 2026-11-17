@@ -47,6 +47,12 @@ function createWindow() {
   // Pencere ilk çizim hazır olunca gösterilir; açılış ekranı (index.html) hemen görünür.
   window.once('ready-to-show', () => window.show());
 
+  // Gezgin'den bırakılan dosya bir bırakma alanının dışına düşerse pencere o dosyaya gitmesin;
+  // uygulama yalnızca kendi sayfasını gösterir.
+  window.webContents.on('will-navigate', (event, url) => {
+    if (url !== window.webContents.getURL()) event.preventDefault();
+  });
+
   if (isDevelopment) {
     window.loadURL(process.env.ELECTRON_RENDERER_URL);
     window.webContents.openDevTools();
@@ -75,11 +81,12 @@ function setupTray() {
 }
 
 // Renderer tema değiştirdiğinde başlık çubuğu overlay'i ve pencere zemini eşlenir.
-ipcMain.on('cybergoose:theme', (event, theme) => {
+// `source` 'system' ise işletim sistemi teması izlenir (prefers-color-scheme sabitlenmez).
+ipcMain.on('cybergoose:theme', (event, theme, source) => {
   if (theme !== 'dark' && theme !== 'light') return;
   const window = BrowserWindow.fromWebContents(event.sender);
   if (!window) return;
-  nativeTheme.themeSource = theme;
+  nativeTheme.themeSource = source === 'system' ? 'system' : theme;
   window.setBackgroundColor(chrome[theme].background);
   if (!isMac && typeof window.setTitleBarOverlay === 'function') {
     window.setTitleBarOverlay({ color: chrome[theme].background, symbolColor: chrome[theme].symbol, height: TITLEBAR_HEIGHT });

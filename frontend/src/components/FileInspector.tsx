@@ -50,7 +50,7 @@ export function FileInspector({ entry, onClose }: FileInspectorProps) {
   const fileSize = local ? formatFileSize(local.Size) : (entry.kind === 'folder' ? '—' : formatFileSize(entry.size))
   const modified = local ? formatDate(local.Change.replace(' ', 'T')) : formatDate(entry.modified)
   const permissions = local?.filemod ?? remote?.permissions ?? '—'
-  const hash = local?.sha256 ?? (entry.source === 'remote' ? 'Uzak dosyalarda hesaplanmıyor' : entry.kind === 'folder' ? '—' : 'Hesaplanıyor')
+  const hash = local ? (local.sha256 ?? '1 GB üstü dosyalarda hesaplanmıyor') : (entry.source === 'remote' ? 'Uzak dosyalarda hesaplanmıyor' : entry.kind === 'folder' ? '—' : 'Hesaplanıyor')
   const preview = local?.preview
 
   const applyMode = async () => {

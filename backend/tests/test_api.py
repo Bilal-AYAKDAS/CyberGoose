@@ -7,6 +7,24 @@ def connect_ftp(client, port, password="password"):
     })
 
 
+def run_transfer(client, payload, timeout=5.0):
+    """Asenkron aktarımı başlatıp bitmesini bekler; bitmiş iş durumunu döndürür."""
+    import time
+
+    started = client.post("/api/transfers", json=payload)
+    if started.status_code != 202:
+        return started.get_json() | {"httpStatus": started.status_code}
+    job_id = started.get_json()["id"]
+    deadline = time.time() + timeout
+    status = started.get_json()
+    while time.time() < deadline:
+        status = client.get(f"/api/transfers/{job_id}").get_json()
+        if status["status"] != "transferring":
+            return status
+        time.sleep(0.02)
+    raise AssertionError(f"Aktarım {timeout} sn içinde bitmedi: {status}")
+
+
 def test_health(client):
     assert client.get("/api/health").get_json() == {"ok": True}
 
@@ -88,12 +106,15 @@ def test_bookmarks_crud(client, tmp_path):
 
 def test_wrong_ftp_password_returns_a_real_error(client, ftp_server):
     response = connect_ftp(client, ftp_server["port"], password="yanlis")
-    assert response.status_code == 502
-    assert "bağlantısı kurulamadı" in response.get_json()["error"]
+    assert response.status_code == 401
+    body = response.get_json()
+    assert "bağlantısı kurulamadı" in body["error"] and "parola hatalı" in body["error"]
+    assert body["code"] == "auth_failed"
 
 
 def test_ftp_list_upload_download_delete(client, ftp_server, tmp_path):
-    assert connect_ftp(client, ftp_server["port"]).get_json() == {"connected": True, "type": "FTP"}
+    connected = connect_ftp(client, ftp_server["port"]).get_json()
+    assert connected["connected"] is True and connected["type"] == "FTP" and connected["sessionId"] > 0
 
     listing = client.post("/api/remote/list", json={"path": "/"}).get_json()
     names = {entry["name"]: entry["kind"] for entry in listing["entries"]}
@@ -102,16 +123,16 @@ def test_ftp_list_upload_download_delete(client, ftp_server, tmp_path):
     local_dir = tmp_path / "yerel"
     local_dir.mkdir()
     download = {"direction": "download", "name": "readme.txt", "localDir": str(local_dir), "remoteDir": "/"}
-    assert client.post("/api/transfer", json=download).status_code == 200
+    assert run_transfer(client, download)["status"] == "completed"
     assert (local_dir / "readme.txt").read_text(encoding="utf-8") == "Merhaba FTP\n"
 
-    again = client.post("/api/transfer", json=download)
-    assert again.status_code == 409 and again.get_json()["code"] == "exists"
-    assert client.post("/api/transfer", json={**download, "overwrite": True}).status_code == 200
+    again = run_transfer(client, download)
+    assert again["status"] == "error" and again["errorCode"] == "exists"
+    assert run_transfer(client, {**download, "overwrite": True})["status"] == "completed"
 
     (local_dir / "yeni.txt").write_text("yukle", encoding="utf-8")
     upload = {"direction": "upload", "name": "yeni.txt", "localDir": str(local_dir), "remoteDir": "/pub"}
-    assert client.post("/api/transfer", json=upload).status_code == 200
+    assert run_transfer(client, upload)["status"] == "completed"
     assert (ftp_server["root"] / "pub" / "yeni.txt").read_text(encoding="utf-8") == "yukle"
 
     assert client.post("/api/delete", json={"side": "remote", "path": "/pub/yeni.txt"}).status_code == 200
@@ -126,7 +147,8 @@ def test_put_session_updates_connection_id(client, ftp_server):
     assert connect_ftp(client, ftp_server["port"]).status_code == 200
     updated = client.put("/api/session", json={"connectionId": "42"})
     assert updated.status_code == 200
-    assert updated.get_json() == {"connected": True, "type": "FTP", "connectionId": "42"}
+    info = updated.get_json()
+    assert info["connected"] is True and info["type"] == "FTP" and info["connectionId"] == "42"
 
 
 def test_dropbox_expired_token_falls_back_to_oauth(tmp_path, monkeypatch):
@@ -231,7 +253,7 @@ def test_connection_password_stored_in_keyring_not_sqlite(client, monkeypatch):
     secret = backend.db.get_connection_secret(body["id"])
     assert secret["password"] == "s3cr3t"
     with backend.db._connect() as conn:
-        raw = conn.execute("SELECT PASSWORD FROM BOOKMARKS WHERE ID = ?", (body["id"],)).fetchone()
+        raw = conn.execute("SELECT PASSWORD FROM CONNECTIONS WHERE ID = ?", (body["id"],)).fetchone()
     assert raw[0] is None
 
     assert client.delete(f"/api/connections/{body['id']}").status_code == 200
@@ -245,7 +267,7 @@ def test_local_and_ftp_mkdir_rename_and_folder_delete(client, ftp_server, tmp_pa
     (tmp_path / "deneme" / "ic.txt").write_text("1", encoding="utf-8")
     assert client.post("/api/rename", json={"side": "local", "path": str(tmp_path / "deneme"), "name": "yeni_ad"}).status_code == 200
     assert (tmp_path / "yeni_ad" / "ic.txt").is_file()
-    assert client.post("/api/delete", json={"side": "local", "path": str(tmp_path / "yeni_ad")}).status_code == 200
+    assert client.post("/api/delete", json={"side": "local", "path": str(tmp_path / "yeni_ad"), "permanent": True}).status_code == 200
     assert not (tmp_path / "yeni_ad").exists()
 
     # Uzak FTP klasör oluşturma, yeniden adlandırma ve özyinelemeli silme
@@ -314,7 +336,7 @@ def test_ftps_connect_uses_tls_and_utf8(client, monkeypatch):
     monkeypatch.setattr(ftp_mod, "FTP_TLS", FakeFTP)
     resp = client.post("/api/connect", json={"type": "FTPS", "host": "ftps.example.com", "port": "21", "username": "u", "password": "p"})
     assert resp.status_code == 200
-    assert resp.get_json() == {"connected": True, "type": "FTPS"}
+    assert resp.get_json()["type"] == "FTPS"
     assert ("prot_p",) in calls
 
 
@@ -418,7 +440,7 @@ def test_onedrive_operations(client, monkeypatch, tmp_path):
             pass
 
     monkeypatch.setattr(backend.sessions, "connect_onedrive", lambda: SimpleNamespace(onedrive=True, session=FakeSession(), close=lambda: None))
-    assert client.post("/api/connect", json={"type": "OneDrive"}).get_json() == {"connected": True, "type": "OneDrive"}
+    assert client.post("/api/connect", json={"type": "OneDrive"}).get_json()["type"] == "OneDrive"
 
     listing = client.post("/api/remote/list", json={"path": "/"}).get_json()
     assert listing["entries"][0]["name"] == "not.txt"
@@ -427,9 +449,9 @@ def test_onedrive_operations(client, monkeypatch, tmp_path):
 
     local_dir = tmp_path / "od"
     local_dir.mkdir()
-    assert client.post("/api/transfer", json={"direction": "download", "name": "not.txt", "localDir": str(local_dir), "remoteDir": "/"}).status_code == 200
+    assert run_transfer(client, {"direction": "download", "name": "not.txt", "localDir": str(local_dir), "remoteDir": "/"})["status"] == "completed"
     assert (local_dir / "not.txt").read_text(encoding="utf-8") == "merhaba"
-    assert client.post("/api/transfer", json={"direction": "upload", "name": "not.txt", "localDir": str(local_dir), "remoteDir": "/"}).status_code == 200
+    assert run_transfer(client, {"direction": "upload", "name": "not.txt", "localDir": str(local_dir), "remoteDir": "/", "overwrite": True})["status"] == "completed"
     assert client.post("/api/delete", json={"side": "remote", "path": "/not.txt"}).status_code == 200
 
 

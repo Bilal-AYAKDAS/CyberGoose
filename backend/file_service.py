@@ -12,7 +12,9 @@ Sağlayıcı tipi, ağır SDK'ları içe aktarmamak için nesnenin öznitelikler
 """
 from __future__ import annotations
 
+import ftplib
 import io
+import logging
 import os
 import posixpath
 import shutil
@@ -23,15 +25,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
+logger = logging.getLogger(__name__)
+
 
 class FileServiceError(Exception):
     """HTTP durum koduyla birlikte kullanıcıya gösterilebilir hata."""
 
-    def __init__(self, message: str, status: int = 400, code: str | None = None):
+    def __init__(self, message: str, status: int = 400, code: str | None = None, extra: dict | None = None):
         super().__init__(message)
         self.message = message
         self.status = status
         self.code = code
+        # Arayüzün karar vermesi için ek alanlar (ör. SFTP sunucu anahtarı parmak izi).
+        self.extra = extra or {}
 
 
 class TransferCancelled(FileServiceError):
@@ -45,6 +51,7 @@ DROPBOX_CHUNK_SIZE = 8 * 1024 * 1024
 ONEDRIVE_SIMPLE_LIMIT = 4 * 1024 * 1024
 ONEDRIVE_CHUNK_SIZE = 5 * 1024 * 1024
 GRAPH_DRIVE_ROOT = 'https://graph.microsoft.com/v1.0/me/drive'
+TRANSFER_CHUNK = 64 * 1024
 
 
 def _is_auth_error(error: Exception) -> bool:
@@ -63,8 +70,21 @@ def _iso(timestamp: float | None) -> str | None:
     return datetime.fromtimestamp(timestamp).isoformat(timespec='seconds')
 
 
-def _entry(name, kind, size, modified, path):
-    return {"name": name, "kind": kind, "size": size, "modified": modified, "path": path}
+def _entry(name, kind, size, modified, path, hidden=None):
+    return {
+        "name": name,
+        "kind": kind,
+        "size": size,
+        "modified": modified,
+        "path": path,
+        # Nokta ile başlayan adlar her yerde gizli sayılır; Windows'ta ayrıca "gizli" özniteliği.
+        # Yarım aktarım (.cgpart) ve düzenleyici geçici dosyaları da gizli sayılır.
+        "hidden": bool(hidden) or name.startswith('.') or name.endswith(('.cgpart', '.cgtmp', '.cgbak')),
+    }
+
+
+FILE_ATTRIBUTE_HIDDEN = 0x2
+MAX_PLAN_FILES = 50_000
 
 
 def _validate_name(name: str) -> str:
@@ -113,15 +133,39 @@ def list_local(path: str | None) -> dict:
             is_dir = child.is_dir()
         except OSError:
             continue  # Kırık link veya erişilemeyen öğe: listeyi bozmasın.
+        attributes = getattr(info, 'st_file_attributes', 0) or 0
         entries.append(_entry(
             child.name,
             'folder' if is_dir else 'file',
             None if is_dir else info.st_size,
             _iso(info.st_mtime),
             str(Path(child.path)),
+            hidden=bool(attributes & FILE_ATTRIBUTE_HIDDEN),
         ))
     parent = str(target.parent) if target.parent != target else None
     return {"path": str(target), "parent": parent, "crumbs": local_crumbs(str(target)), "entries": entries}
+
+
+def local_stat(path: str) -> dict:
+    """Sürükle bırak ile gelen bir yolun dosya mı klasör mü olduğunu söyler."""
+    if not path:
+        raise FileServiceError('Yol gerekli', 400)
+    target = Path(path).expanduser()
+    try:
+        info = target.stat()
+    except FileNotFoundError:
+        raise FileServiceError('Öğe bulunamadı', 404)
+    except PermissionError:
+        raise FileServiceError('Bu öğeyi okuma izniniz yok', 403)
+    is_dir = stat.S_ISDIR(info.st_mode)
+    return {
+        "name": target.name or str(target),
+        "path": str(target),
+        "parent": str(target.parent),
+        "kind": 'folder' if is_dir else 'file',
+        "size": None if is_dir else info.st_size,
+        "modified": _iso(info.st_mtime),
+    }
 
 
 # ---------------------------------------------------------------- uzak: yardımcılar
@@ -263,7 +307,7 @@ def _drive_resolve_folder(service, path) -> str:
 
 def _drive_find_file(service, folder_id, name):
     query = f"name = '{_drive_escape(name)}' and '{folder_id}' in parents and mimeType != '{DRIVE_FOLDER_MIME}' and trashed = false"
-    items = service.files().list(q=query, pageSize=1, fields='files(id, mimeType)').execute().get('files', [])
+    items = service.files().list(q=query, pageSize=1, fields='files(id, mimeType, size)').execute().get('files', [])
     return items[0] if items else None
 
 
@@ -367,7 +411,7 @@ def _remote_exists(provider, conn, remote_file):
             conn.sftp.stat(remote_file)
             return True
         if provider == 'ftp':
-            return conn.ftp.size(remote_file) is not None
+            return _remote_size('ftp', conn, remote_file) is not None
         if provider == 'dropbox':
             conn.dbx.files_get_metadata(remote_file)
             return True
@@ -384,6 +428,41 @@ def _check_cancel(cancel_event) -> None:
         raise TransferCancelled()
 
 
+def _remote_size(provider, conn, remote_file) -> int | None:
+    """Uzak dosyanın boyutu; yoksa veya öğrenilemiyorsa None."""
+    try:
+        if provider == 'sftp':
+            return conn.sftp.stat(remote_file).st_size
+        if provider == 'ftp':
+            conn.ftp.voidcmd('TYPE I')  # SIZE bazı sunucularda ASCII kipinde reddedilir.
+            return conn.ftp.size(remote_file)
+        if provider == 'dropbox':
+            return getattr(conn.dbx.files_get_metadata(remote_file), 'size', None)
+        if provider == 'onedrive':
+            resp = conn.session.get(_onedrive_url(remote_file), timeout=15)
+            return int(resp.json().get('size')) if resp.status_code == 200 else None
+        if provider == 'drive':
+            service = conn.service
+            found = _drive_find_file(service, _drive_resolve_folder(service, posixpath.dirname(remote_file)), posixpath.basename(remote_file))
+            return int(found['size']) if found and found.get('size') is not None else None
+    except Exception:
+        return None
+    return None
+
+
+def _sftp_put_from(conn, local_file: Path, remote_file: str, offset: int, report) -> None:
+    """SFTP yüklemesini `offset` baytından sürdürür (kesilen aktarım)."""
+    with local_file.open('rb') as source, conn.sftp.open(remote_file, 'r+b' if offset else 'wb') as target:
+        source.seek(offset)
+        target.seek(offset)
+        target.set_pipelined(True)
+        done = offset
+        for chunk in iter(lambda: source.read(TRANSFER_CHUNK), b''):
+            target.write(chunk)
+            done += len(chunk)
+            report(done)
+
+
 def upload(
     conn,
     local_dir: str,
@@ -392,7 +471,13 @@ def upload(
     overwrite: bool = False,
     progress_cb=None,
     cancel_event=None,
+    resume: bool = False,
 ) -> dict:
+    """Yerel dosyayı uzak klasöre yükler.
+
+    `resume` yalnızca FTP/SFTP'de anlamlıdır: hedefte daha küçük bir dosya varsa (yarım kalmış
+    aktarım) eksik kısım eklenir. Aynı boyuttaysa dosya zaten tamdır.
+    """
     provider = provider_of(conn)
     name = _validate_name(name)
     local_file = Path(local_dir) / name
@@ -407,6 +492,7 @@ def upload(
         if progress_cb is not None:
             progress_cb(done, total)
 
+    resumed_from = 0
     try:
         _check_cancel(cancel_event)
         if provider == 'drive':
@@ -430,12 +516,21 @@ def upload(
                     report(int(status.resumable_progress), size)
             report(size, size)
         else:
-            if not overwrite and _remote_exists(provider, conn, remote_file):
+            if resume and provider in ('ftp', 'sftp'):
+                existing_size = _remote_size(provider, conn, remote_file)
+                if existing_size is not None and 0 < existing_size <= size:
+                    resumed_from = existing_size
+            if not resumed_from and not overwrite and _remote_exists(provider, conn, remote_file):
                 raise FileServiceError('Hedefte aynı adlı dosya var', 409, 'exists')
-            if provider == 'sftp':
-                conn.sftp.put(str(local_file), remote_file, callback=lambda done, total: report(done, total or size))
+            if resumed_from == size:
+                report(size, size)
+            elif provider == 'sftp':
+                if resumed_from:
+                    _sftp_put_from(conn, local_file, remote_file, resumed_from, report)
+                else:
+                    conn.sftp.put(str(local_file), remote_file, callback=lambda done, total: report(done, total or size))
             elif provider == 'ftp':
-                transferred = 0
+                transferred = resumed_from
 
                 def on_block(chunk: bytes) -> None:
                     nonlocal transferred
@@ -443,7 +538,11 @@ def upload(
                     report(transferred, size)
 
                 with local_file.open('rb') as handle:
-                    conn.ftp.storbinary(f'STOR {remote_file}', handle, blocksize=65536, callback=on_block)
+                    if resumed_from:
+                        handle.seek(resumed_from)
+                        conn.ftp.storbinary(f'APPE {remote_file}', handle, blocksize=TRANSFER_CHUNK, callback=on_block)
+                    else:
+                        conn.ftp.storbinary(f'STOR {remote_file}', handle, blocksize=TRANSFER_CHUNK, callback=on_block)
             elif provider == 'onedrive':
                 _upload_onedrive(conn.session, local_file, remote_file, size, report=report, cancel_event=cancel_event)
             else:
@@ -455,7 +554,7 @@ def upload(
         raise FileServiceError('Hedef klasöre yazma izniniz yok', 403)
     except Exception as error:
         _raise_provider_error('Yükleme başarısız oldu', error)
-    return {"name": name, "size": size, "to": remote_file}
+    return {"name": name, "size": size, "to": remote_file, "resumedFrom": resumed_from}
 
 
 def _upload_dropbox(dbx, local_file: Path, remote_file: str, size: int, dropbox_mod, report=None, cancel_event=None) -> None:
@@ -522,7 +621,13 @@ def download(
     overwrite: bool = False,
     progress_cb=None,
     cancel_event=None,
+    resume: bool = False,
 ) -> dict:
+    """Uzak dosyayı önce `<ad>.cgpart` dosyasına indirir, bitince yerine taşır.
+
+    FTP/SFTP'de aktarım hata ile kesilirse `.cgpart` silinmez; `resume=True` ile yeniden
+    denendiğinde indirme kaldığı bayttan sürer. İptal edilen aktarımın parçası silinir.
+    """
     provider = provider_of(conn)
     name = _validate_name(name)
     target_dir = Path(local_dir)
@@ -534,6 +639,8 @@ def download(
     remote_dir = normalize_remote(remote_dir)
     remote_file = posixpath.join(remote_dir, name)
     partial = local_file.with_name(local_file.name + '.cgpart')
+    resumable = provider in ('ftp', 'sftp')
+    offset = partial.stat().st_size if resume and resumable and partial.is_file() else 0
 
     def report(done: int, total: int | None = None) -> None:
         _check_cancel(cancel_event)
@@ -543,15 +650,27 @@ def download(
     try:
         _check_cancel(cancel_event)
         if provider == 'sftp':
-            conn.sftp.get(remote_file, str(partial), callback=lambda done, total: report(done, total or None))
+            if offset:
+                total_size = conn.sftp.stat(remote_file).st_size
+                if offset > (total_size or 0):
+                    offset = 0  # Uzak dosya değişmiş; baştan indir.
+            if offset:
+                with conn.sftp.open(remote_file, 'rb') as source, partial.open('ab') as handle:
+                    source.seek(offset)
+                    source.prefetch(total_size)
+                    done = offset
+                    for chunk in iter(lambda: source.read(TRANSFER_CHUNK), b''):
+                        handle.write(chunk)
+                        done += len(chunk)
+                        report(done, total_size)
+            else:
+                conn.sftp.get(remote_file, str(partial), callback=lambda done, total: report(done, total or None))
         elif provider == 'ftp':
-            total_size = None
-            try:
-                total_size = conn.ftp.size(remote_file)
-            except Exception:
-                total_size = None
-            transferred = 0
-            with partial.open('wb') as handle:
+            total_size = _remote_size('ftp', conn, remote_file)
+            if offset and total_size is not None and offset > total_size:
+                offset = 0
+            transferred = offset
+            with partial.open('ab' if offset else 'wb') as handle:
                 def on_chunk(chunk: bytes) -> None:
                     nonlocal transferred
                     _check_cancel(cancel_event)
@@ -559,7 +678,7 @@ def download(
                     transferred += len(chunk)
                     report(transferred, total_size)
 
-                conn.ftp.retrbinary(f'RETR {remote_file}', on_chunk, blocksize=65536)
+                conn.ftp.retrbinary(f'RETR {remote_file}', on_chunk, blocksize=TRANSFER_CHUNK, rest=offset or None)
         elif provider == 'dropbox':
             conn.dbx.files_download_to_file(str(partial), remote_file)
             report(partial.stat().st_size, partial.stat().st_size)
@@ -573,7 +692,7 @@ def download(
                 total_size = int(total_header) if total_header and total_header.isdigit() else None
                 transferred = 0
                 with partial.open('wb') as handle:
-                    for chunk in resp.iter_content(chunk_size=65536):
+                    for chunk in resp.iter_content(chunk_size=TRANSFER_CHUNK):
                         if not chunk:
                             continue
                         _check_cancel(cancel_event)
@@ -597,16 +716,28 @@ def download(
                     if status is not None:
                         report(int(status.resumable_progress), int(status.total_size) if status.total_size else None)
         os.replace(partial, local_file)
-    except FileServiceError:
+    except TransferCancelled:
         partial.unlink(missing_ok=True)
         raise
+    except FileServiceError:
+        _discard_partial(partial, resumable)
+        raise
     except PermissionError:
-        partial.unlink(missing_ok=True)
+        _discard_partial(partial, resumable)
         raise FileServiceError('Yerel klasöre yazma izniniz yok', 403)
     except Exception as error:
-        partial.unlink(missing_ok=True)
+        _discard_partial(partial, resumable)
         _raise_provider_error('İndirme başarısız oldu', error)
-    return {"name": name, "size": local_file.stat().st_size, "to": str(local_file)}
+    return {"name": name, "size": local_file.stat().st_size, "to": str(local_file), "resumedFrom": offset}
+
+
+def _discard_partial(partial: Path, resumable: bool) -> None:
+    """Sürdürülebilir sağlayıcıda dolu parça kalır (yeniden denemede kaldığı yerden devam eder)."""
+    try:
+        if not resumable or partial.stat().st_size == 0:
+            partial.unlink(missing_ok=True)
+    except FileNotFoundError:
+        pass
 
 
 # ---------------------------------------------------------------- silme ve izinler
@@ -630,17 +761,64 @@ def _ftp_rmtree(conn, path: str) -> None:
     conn.ftp.rmd(path)
 
 
-def delete_local(path: str) -> None:
+def delete_local(path: str, permanent: bool = False) -> dict:
+    """Varsayılan olarak Geri Dönüşüm Kutusu'na taşır; `permanent=True` kalıcı siler."""
     target = Path(path)
-    if not target.exists():
+    if not target.exists() and not target.is_symlink():
         raise FileServiceError('Öğe bulunamadı', 404)
+    if not permanent:
+        if _bypasses_recycle_bin(target):
+            raise FileServiceError(
+                "Bu sürücüde (ağ veya çıkarılabilir) Geri Dönüşüm Kutusu yok; öğe kalıcı olarak silinir. "
+                "Devam etmek için kalıcı silmeyi seçin.",
+                409, 'trash_unavailable',
+            )
+        try:
+            from send2trash import send2trash
+            send2trash(str(target))
+            return {"trashed": True}
+        except PermissionError:
+            raise FileServiceError('Bu öğeyi silme izniniz yok', 403)
+        except Exception as error:
+            raise FileServiceError(
+                "Öğe Geri Dönüşüm Kutusu'na taşınamadı. Kalıcı olarak silmeyi deneyebilirsiniz.",
+                409, 'trash_failed',
+            ) from error
+    is_link = target.is_symlink() or _is_junction(target)
     try:
-        if target.is_dir():
+        if is_link and target.is_dir():
+            os.rmdir(target)  # Bağlantının kendisi silinir, hedefindeki dosyalar değil.
+        elif target.is_dir() and not is_link:
             shutil.rmtree(target)
         else:
             target.unlink()
     except PermissionError:
         raise FileServiceError('Bu öğeyi silme izniniz yok', 403)
+    except OSError as error:
+        raise FileServiceError(f'Öğe silinemedi: {error.strerror or error}', 409, 'delete_failed') from error
+    return {"trashed": False}
+
+
+def _is_junction(path: Path) -> bool:
+    checker = getattr(path, 'is_junction', None)  # Python 3.12+
+    try:
+        return bool(checker()) if checker else False
+    except OSError:
+        return False
+
+
+def _bypasses_recycle_bin(path: Path) -> bool:
+    """Windows ağ ve çıkarılabilir sürücülerde 'çöpe taşı' sessizce kalıcı silmeye dönüşür."""
+    if os.name != 'nt':
+        return False
+    try:
+        import ctypes
+
+        anchor = path.resolve().anchor or str(path)[:3]
+        drive_type = ctypes.windll.kernel32.GetDriveTypeW(anchor)
+    except Exception:
+        return False
+    return drive_type in (2, 4)  # DRIVE_REMOVABLE, DRIVE_REMOTE
 
 
 def _delete_sftp(conn, remote_file: str) -> None:
@@ -650,11 +828,27 @@ def _delete_sftp(conn, remote_file: str) -> None:
         conn.sftp.remove(remote_file)
 
 
-def _delete_ftp(conn, remote_file: str) -> None:
+def _ftp_is_dir(conn, path: str) -> bool:
+    ftp = conn.ftp
+    current = ftp.pwd()
     try:
-        conn.ftp.delete(remote_file)
-    except Exception:
+        ftp.cwd(path)
+        return True
+    except ftplib.error_perm:
+        return False
+    finally:
+        try:
+            ftp.cwd(current)
+        except ftplib.all_errors:
+            pass
+
+
+def _delete_ftp(conn, remote_file: str) -> None:
+    """Klasörse içeriğiyle siler, değilse dosyayı siler. Hata yutulmaz (izin hatası klasör sanılmaz)."""
+    if _ftp_is_dir(conn, remote_file):
         _ftp_rmtree(conn, remote_file)
+    else:
+        conn.ftp.delete(remote_file)
 
 
 def _delete_drive(conn, remote_file: str) -> None:
@@ -817,6 +1011,8 @@ def plan_local_folder(path: str) -> dict:
         raise FileServiceError('Klasör bulunamadı', 404)
     collected = []
     for current, _dirs, filenames in os.walk(root):
+        if len(collected) > MAX_PLAN_FILES:
+            raise FileServiceError(f'Klasörde {MAX_PLAN_FILES} dosyadan fazlası var; daha küçük parçalar halinde aktarın.', 400, 'too_many_files')
         rel = Path(current).relative_to(root)
         rel_str = '' if str(rel) == '.' else rel.as_posix()
         for fname in filenames:
@@ -835,6 +1031,8 @@ def plan_remote_folder(conn, path: str) -> dict:
     collected = []
 
     def walk(current_path: str, rel_prefix: str) -> None:
+        if len(collected) > MAX_PLAN_FILES:
+            raise FileServiceError(f'Klasörde {MAX_PLAN_FILES} dosyadan fazlası var; daha küçük parçalar halinde aktarın.', 400, 'too_many_files')
         listing = list_remote(conn, current_path)
         for entry in listing["entries"]:
             if entry["kind"] == "folder":
@@ -859,31 +1057,61 @@ def create_local_zip(parent_dir: str, names: list[str], archive_name: str) -> di
         raise FileServiceError('Bu adda bir arşiv zaten var', 409, 'exists')
     if not names:
         raise FileServiceError('Arşivlenecek öğe seçilmedi', 400)
-    with zipfile.ZipFile(dest, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
-        for raw_name in names:
-            clean = _validate_name(raw_name)
-            target = parent / clean
-            if not target.exists():
-                raise FileServiceError(f'Öğe bulunamadı: {clean}', 404)
-            if target.is_dir():
-                for root, _dirs, files in os.walk(target):
-                    for fname in files:
-                        fpath = Path(root) / fname
-                        zf.write(fpath, arcname=str(fpath.relative_to(parent)))
-            else:
-                zf.write(target, arcname=clean)
+    partial = dest.with_name(dest.name + '.cgpart')
+    try:
+        with zipfile.ZipFile(partial, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+            for raw_name in names:
+                clean = _validate_name(raw_name)
+                target = parent / clean
+                if not target.exists():
+                    raise FileServiceError(f'Öğe bulunamadı: {clean}', 404)
+                if target.is_dir():
+                    for root, _dirs, files in os.walk(target):
+                        for fname in files:
+                            fpath = Path(root) / fname
+                            zf.write(fpath, arcname=str(fpath.relative_to(parent)))
+                else:
+                    zf.write(target, arcname=clean)
+        os.replace(partial, dest)
+    except PermissionError:
+        partial.unlink(missing_ok=True)
+        raise FileServiceError('Arşiv oluşturma izniniz yok', 403)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
     return {"name": archive_name, "path": str(dest), "size": dest.stat().st_size}
 
 
+def _decode_text(raw: bytes) -> tuple[str, str]:
+    """Metni ve kodlamasını döndürür: UTF-8 (BOM'lu/BOM'suz), değilse Windows-1254 (Türkçe)."""
+    if b'\x00' in raw[:8192]:
+        raise FileServiceError('Bu bir ikili (binary) dosya; metin olarak düzenlenemez.', 415, 'binary_file')
+    if raw.startswith(b'\xef\xbb\xbf'):
+        return raw[3:].decode('utf-8', errors='strict'), 'utf-8-sig'
+    try:
+        return raw.decode('utf-8', errors='strict'), 'utf-8'
+    except UnicodeDecodeError:
+        # surrogateescape: cp1254'te tanımsız baytlar (0x81, 0x8D...) kaydederken aynen geri yazılır.
+        return raw.decode('cp1254', errors='surrogateescape'), 'cp1254'
+
+
+EDITOR_ENCODINGS = {'utf-8', 'utf-8-sig', 'cp1254'}
+
+
 def read_remote_text(conn, path: str) -> dict:
+    """Uzak dosyayı düzenleyici için okur. Boyut önce kontrol edilir; büyük dosya hiç indirilmez.
+
+    Dönen `newline` dosyadaki satır sonudur: tarayıcı textarea'sı her şeyi `\\n`'e çevirdiği için
+    kaydederken aynı satır sonuna geri dönülür.
+    """
     provider = provider_of(conn)
     remote_file = normalize_remote(path)
+    size = _remote_size(provider, conn, remote_file)
+    if size is not None and size > MAX_REMOTE_EDIT_BYTES:
+        raise FileServiceError('Dosya düzenleme sınırı (256 KB) aşıldı', 400, 'too_large')
     buf = io.BytesIO()
     try:
         if provider == 'sftp':
-            st = conn.sftp.stat(remote_file)
-            if (st.st_size or 0) > MAX_REMOTE_EDIT_BYTES:
-                raise FileServiceError('Dosya düzenleme sınırı (256 KB) aşıldı', 400, 'too_large')
             with conn.sftp.open(remote_file, 'rb') as handle:
                 buf.write(handle.read(MAX_REMOTE_EDIT_BYTES + 1))
         elif provider == 'ftp':
@@ -892,15 +1120,20 @@ def read_remote_text(conn, path: str) -> dict:
             _md, resp = conn.dbx.files_download(remote_file)
             buf.write(resp.content[:MAX_REMOTE_EDIT_BYTES + 1])
         elif provider == 'onedrive':
-            resp = conn.session.get(_onedrive_url(remote_file, '/content'), timeout=30)
-            if not resp.ok:
-                _onedrive_check(resp)
-            buf.write(resp.content[:MAX_REMOTE_EDIT_BYTES + 1])
+            with conn.session.get(_onedrive_url(remote_file, '/content'), stream=True, timeout=30) as resp:
+                if not resp.ok:
+                    _onedrive_check(resp)
+                for chunk in resp.iter_content(chunk_size=TRANSFER_CHUNK):
+                    buf.write(chunk)
+                    if buf.tell() > MAX_REMOTE_EDIT_BYTES:
+                        break
         else:
             service = conn.service
             found = _drive_find_file(service, _drive_resolve_folder(service, posixpath.dirname(remote_file)), posixpath.basename(remote_file))
             if not found:
                 raise FileServiceError('Uzak dosya bulunamadı', 404)
+            if str(found.get('mimeType') or '').startswith(DRIVE_WORKSPACE_PREFIX):
+                raise FileServiceError('Google Workspace dosyaları metin olarak düzenlenemez.', 400, 'google_workspace_file')
             from googleapiclient.http import MediaIoBaseDownload
             downloader = MediaIoBaseDownload(buf, service.files().get_media(fileId=found['id']))
             done = False
@@ -913,21 +1146,130 @@ def read_remote_text(conn, path: str) -> dict:
     raw = buf.getvalue()
     if len(raw) > MAX_REMOTE_EDIT_BYTES:
         raise FileServiceError('Dosya düzenleme sınırı (256 KB) aşıldı', 400, 'too_large')
-    return {"path": remote_file, "content": raw.decode('utf-8', errors='replace')}
+    content, encoding = _decode_text(raw)
+    newline = '\r\n' if '\r\n' in content else '\n'
+    return {"path": remote_file, "content": content.replace('\r\n', '\n'), "encoding": encoding, "newline": newline}
 
 
-def write_remote_text(conn, path: str, content: str) -> dict:
+def _temp_name(remote_file: str) -> str:
+    return posixpath.join(posixpath.dirname(remote_file), f'.{posixpath.basename(remote_file)}.cgtmp')
+
+
+def _write_sftp_atomic(conn, remote_file: str, data: bytes) -> None:
+    """Önce geçici dosyaya yazar, sonra yerine taşır: bağlantı koparsa asıl dosya bozulmaz.
+
+    * Sembolik bağlantıysa hedef dosya düzenlenir (bağlantı normal dosyaya dönüşmez).
+    * Klasöre yazma izni yoksa (geçici dosya açılamazsa) dosyanın kendisine yazılır.
+    * Sunucu üzerine taşımayı desteklemiyorsa asıl dosya önce yedeğe alınır; taşıma da başarısız
+      olursa yedek geri konur. Asıl dosya hiçbir durumda silinip kaybolmaz.
+    """
+    sftp = conn.sftp
+    target = remote_file
+    try:
+        info = sftp.lstat(remote_file)
+        if stat.S_ISLNK(info.st_mode or 0):
+            target = sftp.normalize(remote_file)
+            info = sftp.stat(target)
+        mode = info.st_mode
+    except FileNotFoundError:
+        mode = None
+    temp = _temp_name(target)
+    try:
+        handle = sftp.open(temp, 'wb')
+    except PermissionError:
+        with sftp.open(target, 'wb') as direct:
+            direct.write(data)
+        return
+    try:
+        with handle:
+            handle.write(data)
+        if mode is not None:
+            sftp.chmod(temp, stat.S_IMODE(mode))
+    except Exception:
+        _quiet(lambda: sftp.remove(temp))
+        raise
+    try:
+        sftp.posix_rename(temp, target)
+        return
+    except Exception:
+        if mode is None:
+            try:
+                sftp.rename(temp, target)
+            except Exception:
+                _quiet(lambda: sftp.remove(temp))
+                raise
+            return
+    backup = posixpath.join(posixpath.dirname(target), f'.{posixpath.basename(target)}.cgbak')
+    try:
+        sftp.rename(target, backup)
+    except Exception:
+        _quiet(lambda: sftp.remove(temp))
+        raise
+    try:
+        sftp.rename(temp, target)
+    except Exception:
+        _quiet(lambda: sftp.rename(backup, target))
+        _quiet(lambda: sftp.remove(temp))
+        raise
+    _quiet(lambda: sftp.remove(backup))
+
+
+def _write_ftp_atomic(conn, remote_file: str, data: bytes) -> None:
+    """FTP'de aynı yaklaşım: geçici dosya, gerekirse yedekle değiştirme, izin yoksa yerinde yazma."""
+    ftp = conn.ftp
+    temp = _temp_name(remote_file)
+    try:
+        ftp.storbinary(f'STOR {temp}', io.BytesIO(data))
+    except ftplib.error_perm:
+        # Klasöre yeni dosya yazılamıyor; dosyanın kendisi yazılabilir olabilir.
+        ftp.storbinary(f'STOR {remote_file}', io.BytesIO(data))
+        return
+    try:
+        ftp.rename(temp, remote_file)
+        return
+    except ftplib.error_perm:
+        pass  # Bazı sunucular var olan dosyanın üzerine RNTO yapmaz.
+    backup = posixpath.join(posixpath.dirname(remote_file), f'.{posixpath.basename(remote_file)}.cgbak')
+    try:
+        ftp.rename(remote_file, backup)
+    except ftplib.all_errors:
+        _quiet(lambda: ftp.delete(temp))
+        raise
+    try:
+        ftp.rename(temp, remote_file)
+    except ftplib.all_errors:
+        _quiet(lambda: ftp.rename(backup, remote_file))
+        _quiet(lambda: ftp.delete(temp))
+        raise
+    _quiet(lambda: ftp.delete(backup))
+
+
+def _quiet(action) -> None:
+    try:
+        action()
+    except Exception:
+        logger.debug('Temizlik adımı başarısız', exc_info=True)
+
+
+def write_remote_text(conn, path: str, content: str, encoding: str = 'utf-8', newline: str = '\n') -> dict:
     provider = provider_of(conn)
     remote_file = normalize_remote(path)
-    data = content.encode('utf-8')
+    if encoding not in EDITOR_ENCODINGS:
+        raise FileServiceError('Desteklenmeyen karakter kodlaması', 400)
+    text = content.replace('\r\n', '\n')
+    if newline == '\r\n':
+        text = text.replace('\n', '\r\n')
+    try:
+        data = text.encode(encoding, errors='surrogateescape' if encoding == 'cp1254' else 'strict')
+    except UnicodeEncodeError:
+        raise FileServiceError(f'Metin {encoding} kodlamasıyla kaydedilemiyor (desteklenmeyen karakter var).', 400, 'encoding_error')
     if len(data) > MAX_REMOTE_EDIT_BYTES:
         raise FileServiceError('Dosya düzenleme sınırı (256 KB) aşıldı', 400, 'too_large')
     try:
         if provider == 'sftp':
-            with conn.sftp.open(remote_file, 'wb') as handle:
-                handle.write(data)
+            _write_sftp_atomic(conn, remote_file, data)
         elif provider == 'ftp':
-            conn.ftp.storbinary(f'STOR {remote_file}', io.BytesIO(data))
+            _write_ftp_atomic(conn, remote_file, data)
         elif provider == 'dropbox':
             import dropbox
             conn.dbx.files_upload(data, remote_file, mode=dropbox.files.WriteMode.overwrite)

@@ -1,35 +1,39 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import './styles/app.css'
 import { StatusBar, TitleBar, Toolbar } from './components/AppChrome'
 import { BookmarksPanel } from './components/BookmarksPanel'
+import { ChunkBoundary } from './components/ChunkBoundary'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { ConnectionModal } from './components/ConnectionModal'
 import { ContextMenu, type MenuItem } from './components/ContextMenu'
 import { FileInspector } from './components/FileInspector'
 import { FileManagerView } from './components/FileManagerView'
+import { Icon } from './components/Icon'
 import { Notice } from './components/Notice'
 import { PromptDialog } from './components/PromptDialog'
-import { RemoteAccessModal, type DirectTerminalTarget, type RemoteAccessMode } from './components/RemoteAccessModal'
-import { RemoteEditorModal } from './components/RemoteEditorModal'
-import { SettingsModal } from './components/SettingsModal'
+import { QuickConnectBar } from './components/QuickConnectBar'
 import { Sidebar } from './components/Sidebar'
-import { TerminalDrawer } from './components/TerminalDrawer'
 import { TransferQueue } from './components/TransferQueue'
-import { TunnelModal } from './components/TunnelModal'
 import { useBookmarks } from './hooks/useBookmarks'
-import { toProfile, useConnections } from './hooks/useConnections'
+import { QUICK_ID, toProfile, useConnections } from './hooks/useConnections'
 import { useDirectory } from './hooks/useDirectory'
+import { useFileActions } from './hooks/useFileActions'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
+import { useOverlays, type ConfirmState, type PromptState } from './hooks/useOverlays'
 import { useSettings } from './hooks/useSettings'
 import { useTheme } from './hooks/useTheme'
 import { useTransferQueue } from './hooks/useTransferQueue'
-import { api } from './services/apiClient'
-import type { ConnectionProfile, FileEntry, PaneId } from './types'
+import { api, type HostKeyInfo } from './services/apiClient'
+import type { ConnectionProfile, FileEntry, FolderBookmark, PaneId } from './types'
 
-type DialogState = { open: false } | { open: true; initial?: ConnectionProfile }
-type MenuState = { x: number; y: number; items: MenuItem[] } | null
-type ConfirmState = { title: string; message: string; confirmLabel: string; action: () => Promise<void> } | null
-type PromptState = { title: string; label: string; initialValue?: string; confirmLabel: string; placeholder?: string; action: (value: string) => Promise<void> } | null
+// Seyrek açılan katmanlar ayrı parçalara bölünür: açılış paketi küçülür (xterm.js yalnızca
+// terminal açılınca yüklenir).
+const TerminalDrawer = lazy(() => import('./components/TerminalDrawer').then((m) => ({ default: m.TerminalDrawer })))
+const RemoteEditorModal = lazy(() => import('./components/RemoteEditorModal').then((m) => ({ default: m.RemoteEditorModal })))
+const SettingsModal = lazy(() => import('./components/SettingsModal').then((m) => ({ default: m.SettingsModal })))
+const TunnelModal = lazy(() => import('./components/TunnelModal').then((m) => ({ default: m.TunnelModal })))
+const RemoteAccessModal = lazy(() => import('./components/RemoteAccessModal').then((m) => ({ default: m.RemoteAccessModal })))
+
 type PaneNotice = { tone: 'warn' | 'error'; title: string } | null
 
 function matches(entry: FileEntry, query: string) {
@@ -38,14 +42,22 @@ function matches(entry: FileEntry, query: string) {
 
 const messageOf = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback)
 
+/** Dosya seçimine etki eden kısayollar yalnızca panellerden ya da araç çubuğundan gelirse çalışır. */
+function fromWorkspace(target: EventTarget | null) {
+  if (!(target instanceof Element) || target === document.body) return true
+  return Boolean(target.closest('.cg-pane, .cg-toolbar'))
+}
+
 /**
  * Uygulama penceresi (tasarımdaki AppWindow):
  * başlık 36 · araç çubuğu 40 · [kenar çubuğu 220 | panel | 1px | panel] · transfer kuyruğu · durum 24.
- * Durum mantığı özel hook'lara (useConnections, useTransferQueue, useBookmarks, useDirectory) ayrılmıştır.
+ * Durum mantığı özel hook'lara ayrılmıştır: bağlantılar (useConnections), aktarımlar
+ * (useTransferQueue), dosya eylemleri (useFileActions) ve tüm diyalog/menü katmanları (useOverlays).
  */
 function App({ onReady }: { onReady?: () => void }) {
-  const { theme, toggleTheme } = useTheme()
+  const { theme, preference: themePreference, setPreference: setThemePreference, toggleTheme } = useTheme()
   const { settings, setSettings } = useSettings()
+  const { overlays, set: setOverlay, toggle: toggleOverlay, blocking } = useOverlays()
 
   // ---------------------------------------------------------------- paneller
   const [homePath, setHomePath] = useState<string | null>(null)
@@ -57,7 +69,9 @@ function App({ onReady }: { onReady?: () => void }) {
   const [query, setQuery] = useState('')
   const [editSignal, setEditSignal] = useState<Record<PaneId, number>>({ local: 0, remote: 0 })
   const [remoteNotice, setRemoteNotice] = useState<PaneNotice>(null)
-  const [dialog, setDialog] = useState<DialogState>({ open: false })
+
+  const openConfirm = useCallback((confirm: ConfirmState) => setOverlay({ confirm }), [setOverlay])
+  const openPrompt = useCallback((prompt: PromptState) => setOverlay({ prompt }), [setOverlay])
 
   const focusPane = useCallback((pane: PaneId) => {
     setFocusedPane((current) => {
@@ -73,6 +87,10 @@ function App({ onReady }: { onReady?: () => void }) {
     else setRemotePath(path)
   }, [])
 
+  const setPaneSelection = useCallback((pane: PaneId, names: string[]) => {
+    setSelection((current) => ({ ...current, [pane]: names }))
+  }, [])
+
   // ---------------------------------------------------------------- bağlantılar
   const handleConnected = useCallback((startPath: string) => {
     setRemotePath(startPath)
@@ -86,8 +104,28 @@ function App({ onReady }: { onReady?: () => void }) {
   }, [focusPane])
 
   const handleNeedPassword = useCallback((connection: ConnectionProfile) => {
-    setDialog({ open: true, initial: connection })
-  }, [])
+    setOverlay({ connectionDialog: { initial: connection } })
+  }, [setOverlay])
+
+  /** Kenar çubuğundan açılan SFTP sunucusu ilk kez görülüyor: parmak izini onaylat. */
+  const handleHostKey = useCallback((info: HostKeyInfo, trust: () => Promise<void>) => {
+    setOverlay({
+      confirm: {
+        title: 'Sunucu anahtarını doğrulayın',
+        message: (
+          <>
+            <p>{info.host} sunucusuna ilk kez bağlanıyorsunuz. Bu parmak izini sunucu yöneticisinden aldığınız değerle karşılaştırın.</p>
+            <code className="cg-fingerprint">{info.type} {info.fingerprint}</code>
+            <p>Onaylarsanız anahtar kaydedilir ve sonraki bağlantılarda değişirse uyarılırsınız.</p>
+          </>
+        ),
+        confirmLabel: 'Güven ve bağlan',
+        busyLabel: 'Bağlanıyor',
+        tone: 'default',
+        action: trust,
+      },
+    })
+  }, [setOverlay])
 
   const {
     connections,
@@ -96,32 +134,43 @@ function App({ onReady }: { onReady?: () => void }) {
     activeConnection,
     activeStatus,
     isConnected,
+    sessionId,
     statusOf,
     setSavedConnections,
     setConnectionsError,
     setActiveId,
     setConnectedId,
+    setSessionId,
     loadConnections,
     openConnection,
     disconnect,
     saveFromDialog,
     connectFromDialog,
+    quickConnect,
+    dropOrphanQuickSession,
   } = useConnections({
     onConnected: handleConnected,
     onDisconnected: handleDisconnected,
     onNeedPassword: handleNeedPassword,
     onNotice: setRemoteNotice,
+    onHostKey: handleHostKey,
   })
 
   // ---------------------------------------------------------------- klasörler ve seçimler
   const local = useDirectory('local', localPath, true)
-  const remote = useDirectory('remote', remotePath, isConnected)
+  const remote = useDirectory('remote', remotePath, isConnected, sessionId)
+  const { showHidden } = settings
 
-  const visibleLocal = useMemo(() => focusedPane === 'local' && query ? local.entries.filter((entry) => matches(entry, query)) : local.entries, [focusedPane, query, local.entries])
-  const visibleRemote = useMemo(() => focusedPane === 'remote' && query ? remote.entries.filter((entry) => matches(entry, query)) : remote.entries, [focusedPane, query, remote.entries])
+  const visibleEntries = useCallback((pane: PaneId, entries: FileEntry[]) => {
+    const shown = showHidden ? entries : entries.filter((entry) => !entry.hidden)
+    return focusedPane === pane && query ? shown.filter((entry) => matches(entry, query)) : shown
+  }, [focusedPane, query, showHidden])
+  const visibleLocal = useMemo(() => visibleEntries('local', local.entries), [visibleEntries, local.entries])
+  const visibleRemote = useMemo(() => visibleEntries('remote', remote.entries), [visibleEntries, remote.entries])
 
-  const selectedLocalEntries = useMemo(() => local.entries.filter((entry) => selection.local.includes(entry.name)), [local.entries, selection.local])
-  const selectedRemoteEntries = useMemo(() => isConnected ? remote.entries.filter((entry) => selection.remote.includes(entry.name)) : [], [isConnected, remote.entries, selection.remote])
+  // Seçim yalnızca görünen öğelerden oluşur: gizlenen dosya yanlışlıkla silinmez ya da aktarılmaz.
+  const selectedLocalEntries = useMemo(() => visibleLocal.filter((entry) => selection.local.includes(entry.name)), [visibleLocal, selection.local])
+  const selectedRemoteEntries = useMemo(() => isConnected ? visibleRemote.filter((entry) => selection.remote.includes(entry.name)) : [], [isConnected, visibleRemote, selection.remote])
   const focusedSelections = focusedPane === 'local' ? selectedLocalEntries : selectedRemoteEntries
   const focusedSelection = focusedSelections.at(-1) ?? null
   const focusedDir = focusedPane === 'local' ? local : remote
@@ -142,9 +191,13 @@ function App({ onReady }: { onReady?: () => void }) {
       api.localHome().then(({ path }) => { if (active) setHomePath(path) }),
       api.localDrives?.().then(({ drives: found }) => { if (active) setDrives(found) }).catch(() => undefined),
       api.session().then((session) => {
-        if (active && session.connected && session.connectionId) {
+        if (active && session.connected && session.connectionId === QUICK_ID) {
+          // Hızlı bağlantının adresi saklanmaz; pencere yeniden yüklendiyse oturumu kapat.
+          dropOrphanQuickSession()
+        } else if (active && session.connected && session.connectionId) {
           setConnectedId(session.connectionId)
           setActiveId(session.connectionId)
+          setSessionId(session.sessionId ?? null)
         }
       }),
     ]).finally(() => {
@@ -154,163 +207,116 @@ function App({ onReady }: { onReady?: () => void }) {
       }
     })
     return () => { active = false }
-  }, [onReady, setActiveId, setConnectedId, setConnectionsError, setSavedConnections])
+  }, [dropOrphanQuickSession, onReady, setActiveId, setConnectedId, setConnectionsError, setSavedConnections, setSessionId])
 
   // ---------------------------------------------------------------- yer imleri ve transferler
   const { bookmarks, bookmarksError, bookmarksOpen, setBookmarksOpen, addBookmark, deleteBookmark } = useBookmarks()
-  const { transfers, queueOpen, activeTransfer, setQueueOpen, enqueue, enqueueMany, enqueueFolders, cancelTransfer, retryTransfer, removeTransfer, clearFinished } = useTransferQueue({
+  const { transfers, queueOpen, activeTransfer, activeCount, setQueueOpen, enqueueMany, enqueueFolders, cancelTransfer, retryTransfer, removeTransfer, clearFinished } = useTransferQueue({
     localPath: local.path,
     remotePath,
-    activeConnection,
+    activeConnection: isConnected ? activeConnection : null,
+    sessionId,
     overwriteDefault: settings.overwriteDefault,
     notifications: settings.notifications,
+    maxParallel: settings.maxParallel,
     reloadLocal: local.reload,
     reloadRemote: remote.reload,
   })
 
-  const enqueueSelected = useCallback((entries: FileEntry[], direction: 'upload' | 'download') => {
+  const enqueueSelected = useCallback(async (entries: FileEntry[], direction: 'upload' | 'download') => {
     const filesOnly = entries.filter((entry) => entry.kind === 'file')
     const foldersOnly = entries.filter((entry) => entry.kind === 'folder')
     if (filesOnly.length) enqueueMany(filesOnly, direction)
-    if (foldersOnly.length) void enqueueFolders(foldersOnly, direction)
+    if (!foldersOnly.length) return
+    try {
+      await enqueueFolders(foldersOnly, direction)
+    } catch (error) {
+      setRemoteNotice({ tone: 'error', title: messageOf(error, 'Klasör aktarıma eklenemedi') })
+    }
   }, [enqueueFolders, enqueueMany])
+
+  /** Windows Gezgini'nden uzak panele bırakılan yollar: her birini yerelde sorgulayıp kuyruğa ekler. */
+  const enqueueExternal = useCallback(async (paths: string[]) => {
+    const results = await Promise.allSettled(paths.map((path) => api.localStat(path)))
+    const entries: FileEntry[] = results.flatMap((result) => result.status === 'fulfilled'
+      ? [{ name: result.value.name, path: result.value.path, kind: result.value.kind, size: result.value.size, modified: result.value.modified, source: 'local' as const }]
+      : [])
+    const failed = results.length - entries.length
+    if (failed) setRemoteNotice({ tone: 'warn', title: `${failed} öğe okunamadığı için kuyruğa eklenmedi.` })
+    if (entries.length) await enqueueSelected(entries, 'upload')
+  }, [enqueueSelected])
 
   const currentFolder = focusedPane === 'local'
     ? (local.path ? { label: local.crumbs.at(-1)?.name || local.path, path: local.path, connectionId: null } : null)
-    : (isConnected && remote.path && activeConnection ? { label: remote.crumbs.at(-1)?.name === '/' ? activeConnection.name : remote.crumbs.at(-1)?.name ?? remote.path, path: remote.path, connectionId: activeConnection.id } : null)
+    : (isConnected && remote.path && activeConnection?.saved ? { label: remote.crumbs.at(-1)?.name === '/' ? activeConnection.name : remote.crumbs.at(-1)?.name ?? remote.path, path: remote.path, connectionId: activeConnection.id } : null)
 
-  // ---------------------------------------------------------------- dosya eylemleri, menüler, kısayollar
-  const [confirm, setConfirm] = useState<ConfirmState>(null)
-  const [prompt, setPrompt] = useState<PromptState>(null)
-  const [menu, setMenu] = useState<MenuState>(null)
-  const [inspectedEntry, setInspectedEntry] = useState<FileEntry | null>(null)
-  const [terminalOpen, setTerminalOpen] = useState(false)
-  const [directTerminal, setDirectTerminal] = useState<DirectTerminalTarget | null>(null)
-  const [remoteAccessModal, setRemoteAccessModal] = useState<RemoteAccessMode | null>(null)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [tunnelsOpen, setTunnelsOpen] = useState(false)
-  const [editingRemote, setEditingRemote] = useState<FileEntry | null>(null)
-
-  const reloadPane = (pane: PaneId) => {
+  // ---------------------------------------------------------------- dosya eylemleri
+  const reloadPane = useCallback((pane: PaneId) => {
     if (pane === 'local') local.reload()
     else remote.reload()
-  }
+  }, [local, remote])
 
-  const askDelete = (pane: PaneId, entries: FileEntry[]) => {
-    if (!entries.length) return
-    const single = entries.length === 1 ? entries[0] : null
-    const title = single ? (single.kind === 'folder' ? 'Klasörü sil' : 'Dosyayı sil') : `${entries.length} öğeyi sil`
-    const message = single
-      ? (single.kind === 'folder'
-        ? `${single.name} klasörü ve içindeki tüm öğeler kalıcı olarak silinecek. Bu işlem geri alınamaz.`
-        : `${single.name} kalıcı olarak silinecek. Bu işlem geri alınamaz.`)
-      : `Seçili ${entries.length} öğe kalıcı olarak silinecek. Bu işlem geri alınamaz.`
-    setConfirm({
-      title,
-      message,
-      confirmLabel: 'Sil',
-      action: async () => {
-        for (const item of entries) {
-          await api.deleteEntry(pane, item.path)
-          if (inspectedEntry?.path === item.path) setInspectedEntry(null)
-        }
-        setSelection((current) => ({ ...current, [pane]: [] }))
-        reloadPane(pane)
-      },
-    })
-  }
-
-  const askCreateFolder = (pane: PaneId) => {
-    const parentPath = pane === 'local' ? local.path : (isConnected ? remote.path : null)
-    if (!parentPath) return
-    setPrompt({
-      title: 'Yeni klasör',
-      label: 'Klasör adı',
-      confirmLabel: 'Oluştur',
-      placeholder: 'Yeni klasör',
-      action: async (name) => {
-        await api.mkdir(pane, parentPath, name)
-        reloadPane(pane)
-      },
-    })
-  }
-
-  const askRename = (pane: PaneId, entry: FileEntry) => {
-    setPrompt({
-      title: 'Yeniden adlandır',
-      label: 'Yeni ad',
-      initialValue: entry.name,
-      confirmLabel: 'Kaydet',
-      action: async (newName) => {
-        if (newName === entry.name) return
-        await api.renameEntry(pane, entry.path, newName)
-        setSelection((current) => ({ ...current, [pane]: [newName] }))
-        if (inspectedEntry?.path === entry.path) setInspectedEntry(null)
-        reloadPane(pane)
-      },
-    })
-  }
-
-  const askCreateZip = (entries: FileEntry[]) => {
-    if (!local.path || !entries.length) return
-    const parentDir = local.path
-    const defaultName = entries.length === 1 ? `${entries[0].name}.zip` : 'arsiv.zip'
-    setPrompt({
-      title: 'Zip arşivi oluştur',
-      label: 'Arşiv adı',
-      initialValue: defaultName,
-      confirmLabel: 'Oluştur',
-      action: async (archiveName) => {
-        await api.createZip(parentDir, entries.map((item) => item.name), archiveName)
-        local.reload()
-      },
-    })
-  }
+  const { askDelete, askCreateFolder, askRename, askCreateZip } = useFileActions({
+    localPath: local.path,
+    remotePath: remote.path,
+    isConnected,
+    inspectedPath: overlays.inspected?.path ?? null,
+    openConfirm,
+    openPrompt,
+    clearInspected: useCallback(() => setOverlay({ inspected: null }), [setOverlay]),
+    setPaneSelection,
+    reloadPane,
+  })
 
   const openEntry = (pane: PaneId, entry: FileEntry) => {
     if (entry.kind === 'folder') navigate(pane, entry.path)
-    else setInspectedEntry(entry)
+    else setOverlay({ inspected: entry })
   }
 
   const canUpload = Boolean(selectedLocalEntries.length > 0 && isConnected && remote.path)
   const canDownload = Boolean(selectedRemoteEntries.length > 0 && local.path)
   const canCreateFolder = Boolean(focusedPane === 'local' ? local.path : (isConnected && remote.path))
+  const toggleHidden = () => setSettings({ ...settings, showHidden: !settings.showHidden })
+
+  // ---------------------------------------------------------------- menüler
+  const openMenu = (event: MouseEvent, items: MenuItem[]) => setOverlay({ menu: { x: event.clientX, y: event.clientY, items } })
 
   const fileMenu = (pane: PaneId, entry: FileEntry, event: MouseEvent) => {
     const paneSelections = pane === 'local' ? selectedLocalEntries : selectedRemoteEntries
     const targets = paneSelections.some((item) => item.name === entry.name) ? paneSelections : [entry]
+    const transferItem: MenuItem = pane === 'local'
+      ? { label: targets.length > 1 ? `Yükle (${targets.length})` : entry.kind === 'folder' ? 'Klasörü yükle' : 'Yükle', onSelect: () => { void enqueueSelected(targets, 'upload') }, disabled: !isConnected, hint: 'Ctrl+U' }
+      : { label: targets.length > 1 ? `İndir (${targets.length})` : entry.kind === 'folder' ? 'Klasörü indir' : 'İndir', onSelect: () => { void enqueueSelected(targets, 'download') }, hint: 'Ctrl+D' }
+    const zipItem: MenuItem[] = pane === 'local' ? [{ label: targets.length > 1 ? `Zip arşivi oluştur (${targets.length})` : 'Zip arşivi oluştur', onSelect: () => askCreateZip(targets) }] : []
+    const deleteLabel = pane === 'local' ? "Geri Dönüşüm Kutusu'na taşı" : 'Sil'
     const items: MenuItem[] = targets.length > 1
       ? [
-        pane === 'local'
-          ? { label: `Yükle (${targets.length})`, onSelect: () => enqueueSelected(targets, 'upload'), disabled: !isConnected, hint: 'Ctrl+U' }
-          : { label: `İndir (${targets.length})`, onSelect: () => enqueueSelected(targets, 'download'), hint: 'Ctrl+D' },
-        ...(pane === 'local' ? [{ label: `Zip arşivi oluştur (${targets.length})`, onSelect: () => askCreateZip(targets) }] : []),
-        { label: `Sil (${targets.length})`, onSelect: () => askDelete(pane, targets), danger: true, hint: 'Del' },
+        transferItem,
+        ...zipItem,
+        { label: `${deleteLabel} (${targets.length})`, onSelect: () => askDelete(pane, targets), danger: true, hint: 'Del' },
       ]
-      : entry.kind === 'folder'
-        ? [
-          { label: 'Aç', onSelect: () => navigate(pane, entry.path), hint: 'Enter' },
-          pane === 'local'
-            ? { label: 'Klasörü yükle', onSelect: () => enqueueSelected([entry], 'upload'), disabled: !isConnected }
-            : { label: 'Klasörü indir', onSelect: () => enqueueSelected([entry], 'download') },
-          ...(pane === 'local' ? [{ label: 'Zip arşivi oluştur', onSelect: () => askCreateZip([entry]) }] : []),
-          { label: 'Yeni klasör', onSelect: () => askCreateFolder(pane), hint: 'Ctrl+Shift+N' },
-          { label: 'Yeniden adlandır', onSelect: () => askRename(pane, entry), hint: 'F2' },
-          { label: 'Sil', onSelect: () => askDelete(pane, [entry]), danger: true, hint: 'Del' },
-        ]
-        : [
-          { label: 'Detaylar', onSelect: () => setInspectedEntry(entry), hint: 'Enter' },
-          ...(pane === 'remote' ? [{ label: 'Metin olarak düzenle', onSelect: () => setEditingRemote(entry) }] : []),
-          pane === 'local'
-            ? { label: 'Yükle', onSelect: () => enqueue(entry, 'upload'), disabled: !isConnected, hint: 'Ctrl+U' }
-            : { label: 'İndir', onSelect: () => enqueue(entry, 'download'), hint: 'Ctrl+D' },
-          ...(pane === 'local' ? [{ label: 'Zip arşivi oluştur', onSelect: () => askCreateZip([entry]) }] : []),
-          { label: 'Yeni klasör', onSelect: () => askCreateFolder(pane), hint: 'Ctrl+Shift+N' },
-          { label: 'Yeniden adlandır', onSelect: () => askRename(pane, entry), hint: 'F2' },
-          { label: 'Yolu kopyala', onSelect: () => { void navigator.clipboard?.writeText(entry.path) } },
-          { label: 'Sil', onSelect: () => askDelete(pane, [entry]), danger: true, hint: 'Del' },
-        ]
-    setMenu({ x: event.clientX, y: event.clientY, items })
+      : [
+        entry.kind === 'folder'
+          ? { label: 'Aç', onSelect: () => navigate(pane, entry.path), hint: 'Enter' }
+          : { label: 'Detaylar', onSelect: () => setOverlay({ inspected: entry }), hint: 'Enter' },
+        ...(pane === 'remote' && entry.kind === 'file' ? [{ label: 'Metin olarak düzenle', onSelect: () => setOverlay({ editing: entry }) }] : []),
+        transferItem,
+        ...zipItem,
+        { label: 'Yeniden adlandır', onSelect: () => askRename(pane, entry), hint: 'F2' },
+        { label: 'Yolu kopyala', onSelect: () => { void navigator.clipboard?.writeText(entry.path) } },
+        { label: deleteLabel, onSelect: () => askDelete(pane, [entry]), danger: true, hint: 'Del' },
+      ]
+    openMenu(event, items)
+  }
+
+  const backgroundMenu = (pane: PaneId, event: MouseEvent) => {
+    const canCreate = Boolean(pane === 'local' ? local.path : (isConnected && remote.path))
+    if (!canCreate) return
+    openMenu(event, [
+      { label: 'Yeni klasör', onSelect: () => askCreateFolder(pane), hint: 'Ctrl+Shift+N' },
+      { label: 'Yenile', onSelect: () => reloadPane(pane), hint: 'F5' },
+      { label: settings.showHidden ? 'Gizli dosyaları sakla' : 'Gizli dosyaları göster', onSelect: toggleHidden, hint: 'Ctrl+H' },
+    ])
   }
 
   const connectionMenu = (connection: ConnectionProfile, event: MouseEvent) => {
@@ -332,15 +338,16 @@ function App({ onReady }: { onReady?: () => void }) {
         })
       }
       items.push(
-        { label: 'Düzenle', onSelect: () => setDialog({ open: true, initial: connection }) },
+        { label: 'Düzenle', onSelect: () => setOverlay({ connectionDialog: { initial: connection } }) },
         { label: 'Adresi kopyala', onSelect: () => { void navigator.clipboard?.writeText(`${connection.username ? `${connection.username}@` : ''}${connection.host}:${connection.port}`) } },
         {
           label: 'Sil',
           danger: true,
-          onSelect: () => setConfirm({
+          onSelect: () => openConfirm({
             title: 'Bağlantıyı sil',
-            message: `${connection.name} kayıtlı bağlantılardan ve yer imlerinden silinecek.`,
+            message: `${connection.name} kayıtlı bağlantılardan ve yer imlerinden silinecek. Kayıtlı parolası da Windows Kimlik Bilgileri'nden kaldırılır.`,
             confirmLabel: 'Sil',
+            busyLabel: 'Siliniyor',
             action: async () => {
               if (connected) await disconnect()
               await api.deleteConnection(connection.id)
@@ -351,18 +358,57 @@ function App({ onReady }: { onReady?: () => void }) {
         },
       )
     }
-    setMenu({ x: event.clientX, y: event.clientY, items })
+    openMenu(event, items)
   }
+
+  // ---------------------------------------------------------------- terminal
+  const canTerminal = Boolean(isConnected && activeConnection?.type === 'SFTP')
+  const { terminal } = overlays
+  const showTerminalDrawer = terminal.open && (Boolean(terminal.direct) || (canTerminal && Boolean(activeConnection)))
+
+  const handleOpenTerminal = () => {
+    if (canTerminal) {
+      setOverlay({ terminal: { open: !showTerminalDrawer || Boolean(terminal.direct), direct: null } })
+      return
+    }
+    if (terminal.open && terminal.direct) {
+      setOverlay({ terminal: { open: false, direct: null } })
+      return
+    }
+    setOverlay({ remoteAccess: 'ssh' })
+  }
+
+  // ---------------------------------------------------------------- kısayollar
+  // Gezgin'den bırakılan dosya bir bırakma alanının dışına düşerse tarayıcı dosyayı açmaya çalışmasın.
+  useEffect(() => {
+    const block = (event: DragEvent) => {
+      if (event.dataTransfer?.types.includes('Files')) event.preventDefault()
+    }
+    window.addEventListener('dragover', block)
+    window.addEventListener('drop', block)
+    return () => {
+      window.removeEventListener('dragover', block)
+      window.removeEventListener('drop', block)
+    }
+  }, [])
 
   useKeyboardShortcuts((event) => {
     const mod = event.ctrlKey || event.metaKey
     const key = event.key.toLowerCase()
+    const selectionShortcut = event.key === 'Delete' || event.key === 'F2' || (mod && (key === 'u' || key === 'd' || (event.shiftKey && key === 'n')))
+    if (selectionShortcut && !fromWorkspace(event.target)) return
     if (mod && key === 'l') {
       event.preventDefault()
       setEditSignal((current) => ({ ...current, [focusedPane]: current[focusedPane] + 1 }))
     } else if (mod && key === 'f') {
       event.preventDefault()
       document.getElementById('cg-search-input')?.focus()
+    } else if (mod && key === 'k') {
+      event.preventDefault()
+      toggleOverlay('quickConnect')
+    } else if (mod && key === 'h') {
+      event.preventDefault()
+      toggleHidden()
     } else if (event.key === 'F5') {
       event.preventDefault()
       focusedDir.reload()
@@ -374,39 +420,36 @@ function App({ onReady }: { onReady?: () => void }) {
       askCreateFolder(focusedPane)
     } else if (event.key === 'Delete' && focusedSelections.length) {
       event.preventDefault()
-      askDelete(focusedPane, focusedSelections)
+      askDelete(focusedPane, focusedSelections, event.shiftKey)
     } else if (mod && key === 'u' && canUpload) {
       event.preventDefault()
-      enqueueSelected(selectedLocalEntries, 'upload')
+      void enqueueSelected(selectedLocalEntries, 'upload')
     } else if (mod && key === 'd' && canDownload) {
       event.preventDefault()
-      enqueueSelected(selectedRemoteEntries, 'download')
+      void enqueueSelected(selectedRemoteEntries, 'download')
     }
-  }, dialog.open || Boolean(confirm) || Boolean(prompt) || Boolean(menu) || Boolean(remoteAccessModal) || settingsOpen || tunnelsOpen || Boolean(editingRemote))
+  }, blocking)
 
   // ---------------------------------------------------------------- görünüm
   const localPane = { ...local, visibleEntries: visibleLocal, editSignal: editSignal.local }
   const remotePane = { ...remote, visibleEntries: visibleRemote, editSignal: editSignal.remote }
+  const closeConfirm = () => setOverlay({ confirm: null })
 
-  const canTerminal = Boolean(isConnected && activeConnection?.type === 'SFTP')
-  const showTerminalDrawer = terminalOpen && (Boolean(directTerminal) || (canTerminal && Boolean(activeConnection)))
-
-  const handleOpenTerminal = () => {
-    if (canTerminal) {
-      setDirectTerminal(null)
-      setTerminalOpen((open) => !open)
+  const selectBookmark = (bookmark: FolderBookmark) => {
+    setBookmarksOpen(false)
+    if (bookmark.connectionId === null) {
+      navigate('local', bookmark.path)
+      focusPane('local')
       return
     }
-    if (terminalOpen && directTerminal) {
-      setTerminalOpen(false)
-      return
-    }
-    setRemoteAccessModal('ssh')
+    const connection = connections.find((item) => item.id === String(bookmark.connectionId))
+    if (connection) void openConnection(connection, bookmark.path)
+    else setRemoteNotice({ tone: 'warn', title: `${bookmark.name} yer iminin bağlantısı artık yok.` })
   }
 
   return (
     <div className="cg-window">
-      <TitleBar connection={isConnected ? activeConnection : null} theme={theme} onToggleTheme={toggleTheme} onOpenSettings={() => setSettingsOpen(true)} />
+      <TitleBar connection={isConnected ? activeConnection : null} theme={theme} onToggleTheme={toggleTheme} onOpenSettings={() => setOverlay({ settings: true })} />
       <Toolbar
         focusedPane={focusedPane}
         canUpload={canUpload}
@@ -415,35 +458,44 @@ function App({ onReady }: { onReady?: () => void }) {
         canInspect={Boolean(focusedSelection && focusedSelection.kind === 'file')}
         canDelete={Boolean(focusedSelections.length)}
         terminalOpen={showTerminalDrawer}
+        quickOpen={overlays.quickConnect}
+        showHidden={settings.showHidden}
         query={query}
         bookmarksOpen={bookmarksOpen}
-        onNewConnection={() => setDialog({ open: true })}
-        onUpload={() => enqueueSelected(selectedLocalEntries, 'upload')}
-        onDownload={() => enqueueSelected(selectedRemoteEntries, 'download')}
+        onNewConnection={() => setOverlay({ connectionDialog: {} })}
+        onQuickConnect={() => toggleOverlay('quickConnect')}
+        onUpload={() => { void enqueueSelected(selectedLocalEntries, 'upload') }}
+        onDownload={() => { void enqueueSelected(selectedRemoteEntries, 'download') }}
         onCreateFolder={() => askCreateFolder(focusedPane)}
         onRefresh={() => focusedDir.reload()}
         onDelete={() => askDelete(focusedPane, focusedSelections)}
-        onInspect={() => focusedSelection && setInspectedEntry(focusedSelection)}
+        onInspect={() => focusedSelection && setOverlay({ inspected: focusedSelection })}
         onOpenTerminal={handleOpenTerminal}
-        onOpenRdp={() => setRemoteAccessModal('rdp')}
+        onToggleHidden={toggleHidden}
         onToggleBookmarks={() => setBookmarksOpen((open) => !open)}
         onQueryChange={setQuery}
       />
+      {overlays.quickConnect && (
+        <QuickConnectBar onConnect={quickConnect} onClose={() => setOverlay({ quickConnect: false })} />
+      )}
       <div className="cg-main">
         <Sidebar
           homePath={homePath}
           connections={connections}
+          bookmarks={bookmarks}
           activeConnectionId={activeId}
           statusOf={statusOf}
           loadError={connectionsError}
           onLocalSelect={() => { navigate('local', homePath ?? ''); focusPane('local') }}
           onConnectionSelect={(connection) => { void openConnection(connection) }}
           onConnectionMenu={connectionMenu}
+          onBookmarkSelect={selectBookmark}
+          onManageBookmarks={() => setBookmarksOpen(true)}
         />
         <div className="cg-workspace">
           {remoteNotice && (
             <div className="cg-workspace-notice">
-              <Notice tone={remoteNotice.tone} title={remoteNotice.title} action={<button className="cg-btn cg-btn-icon cg-btn-ghost cg-btn-sm" aria-label="Bildirimi kapat" onClick={() => setRemoteNotice(null)}>×</button>} />
+              <Notice tone={remoteNotice.tone} title={remoteNotice.title} action={<button className="cg-btn cg-btn-icon cg-btn-ghost cg-btn-sm" aria-label="Bildirimi kapat" onClick={() => setRemoteNotice(null)}><Icon name="close" /></button>} />
             </div>
           )}
           <FileManagerView
@@ -457,21 +509,22 @@ function App({ onReady }: { onReady?: () => void }) {
             onFocusPane={focusPane}
             onSelect={(pane, names, primary) => {
               focusPane(pane)
-              setSelection((current) => ({ ...current, [pane]: names }))
-              if (inspectedEntry && primary?.kind === 'file') setInspectedEntry(primary)
+              setPaneSelection(pane, names)
+              if (overlays.inspected && primary?.kind === 'file') setOverlay({ inspected: primary })
             }}
             onOpen={openEntry}
             onNavigate={navigate}
             onConnect={(connection) => { void openConnection(connection) }}
-            onNewConnection={() => setDialog({ open: true })}
+            onNewConnection={() => setOverlay({ connectionDialog: {} })}
+            onQuickConnect={overlays.quickConnect ? undefined : () => setOverlay({ quickConnect: true })}
             onContextMenu={fileMenu}
+            onBackgroundMenu={backgroundMenu}
             onDropTransfer={(targetPane, names) => {
-              if (targetPane === 'remote') {
-                enqueueMany(local.entries.filter((entry) => names.includes(entry.name)), 'upload')
-              } else {
-                enqueueMany(remote.entries.filter((entry) => names.includes(entry.name)), 'download')
-              }
+              // Yalnızca görünen öğeler: gizli ya da aramayla süzülmüş seçimler aktarılmaz.
+              if (targetPane === 'remote') void enqueueSelected(visibleLocal.filter((entry) => names.includes(entry.name)), 'upload')
+              else void enqueueSelected(visibleRemote.filter((entry) => names.includes(entry.name)), 'download')
             }}
+            onDropExternal={(paths) => { void enqueueExternal(paths) }}
           />
         </div>
         {bookmarksOpen && (
@@ -483,29 +536,24 @@ function App({ onReady }: { onReady?: () => void }) {
             onClose={() => setBookmarksOpen(false)}
             onAdd={async () => { if (currentFolder) await addBookmark(currentFolder) }}
             onDelete={deleteBookmark}
-            onSelect={(bookmark) => {
-              setBookmarksOpen(false)
-              if (bookmark.connectionId === null) {
-                navigate('local', bookmark.path)
-                focusPane('local')
-                return
-              }
-              const connection = connections.find((item) => item.id === String(bookmark.connectionId))
-              if (connection) void openConnection(connection, bookmark.path)
-            }}
+            onSelect={selectBookmark}
           />
         )}
-        <FileInspector entry={inspectedEntry} onClose={() => setInspectedEntry(null)} />
+        <FileInspector entry={overlays.inspected} onClose={() => setOverlay({ inspected: null })} />
       </div>
-      {showTerminalDrawer && (
-        <TerminalDrawer
-          connection={directTerminal ? null : activeConnection}
-          directTarget={directTerminal}
-          theme={theme}
-          onOpenTunnels={() => setTunnelsOpen(true)}
-          onClose={() => { setTerminalOpen(false); setDirectTerminal(null) }}
-        />
-      )}
+      <ChunkBoundary onReset={() => setOverlay({ terminal: { open: false, direct: null } })}>
+      <Suspense fallback={null}>
+        {showTerminalDrawer && (
+          <TerminalDrawer
+            connection={terminal.direct ? null : activeConnection}
+            directTarget={terminal.direct}
+            theme={theme}
+            onOpenTunnels={() => setOverlay({ tunnels: true })}
+            onClose={() => setOverlay({ terminal: { open: false, direct: null } })}
+          />
+        )}
+      </Suspense>
+      </ChunkBoundary>
       <TransferQueue
         items={transfers}
         open={queueOpen}
@@ -519,59 +567,71 @@ function App({ onReady }: { onReady?: () => void }) {
         itemCount={focusedPane === 'local' ? visibleLocal.length : visibleRemote.length}
         selectedCount={focusedSelections.length}
         selectedSize={selectedFilesSize}
-        activeTransfer={activeTransfer?.name ?? null}
+        activeTransfer={activeTransfer ? (activeCount > 1 ? `${activeTransfer.name} ve ${activeCount - 1} dosya daha` : activeTransfer.name) : null}
         connection={isConnected ? activeConnection : null}
       />
-      {dialog.open && (
+      {overlays.connectionDialog && (
         <ConnectionModal
-          initial={dialog.initial}
-          onClose={() => setDialog({ open: false })}
-          onSave={async (values) => { await saveFromDialog(values, dialog.initial) }}
-          onConnect={(values) => connectFromDialog(values, dialog.initial)}
+          initial={overlays.connectionDialog.initial}
+          onClose={() => setOverlay({ connectionDialog: null })}
+          onSave={async (values) => { await saveFromDialog(values, overlays.connectionDialog?.initial) }}
+          onConnect={(values, trustHostKey) => connectFromDialog(values, overlays.connectionDialog?.initial, trustHostKey)}
         />
       )}
-      {remoteAccessModal && (
-        <RemoteAccessModal
-          initialMode={remoteAccessModal}
-          savedConnections={connections}
-          onOpenSsh={(target) => {
-            setDirectTerminal(target)
-            setTerminalOpen(true)
-          }}
-          onClose={() => setRemoteAccessModal(null)}
+      <ChunkBoundary onReset={() => setOverlay({ remoteAccess: null, settings: false, tunnels: false, editing: null })}>
+      <Suspense fallback={null}>
+        {overlays.remoteAccess && (
+          <RemoteAccessModal
+            initialMode={overlays.remoteAccess}
+            savedConnections={connections}
+            onOpenSsh={(target) => setOverlay({ terminal: { open: true, direct: target } })}
+            onClose={() => setOverlay({ remoteAccess: null })}
+          />
+        )}
+        {overlays.settings && (
+          <SettingsModal
+            themePreference={themePreference}
+            onThemeChange={setThemePreference}
+            settings={settings}
+            onChange={setSettings}
+            onClose={() => setOverlay({ settings: false })}
+          />
+        )}
+        {overlays.tunnels && <TunnelModal onClose={() => setOverlay({ tunnels: false })} />}
+        {overlays.editing && (
+          <RemoteEditorModal
+            path={overlays.editing.path}
+            name={overlays.editing.name}
+            onSaved={remote.reload}
+            onClose={() => setOverlay({ editing: null })}
+          />
+        )}
+      </Suspense>
+      </ChunkBoundary>
+      {overlays.confirm && (
+        <ConfirmDialog
+          title={overlays.confirm.title}
+          message={overlays.confirm.message}
+          confirmLabel={overlays.confirm.confirmLabel}
+          tone={overlays.confirm.tone}
+          busyLabel={overlays.confirm.busyLabel}
+          secondary={overlays.confirm.secondary}
+          onConfirm={overlays.confirm.action}
+          onClose={closeConfirm}
         />
       )}
-      {settingsOpen && (
-        <SettingsModal
-          theme={theme}
-          onToggleTheme={toggleTheme}
-          settings={settings}
-          onChange={setSettings}
-          onClose={() => setSettingsOpen(false)}
-        />
-      )}
-      {tunnelsOpen && <TunnelModal onClose={() => setTunnelsOpen(false)} />}
-      {editingRemote && (
-        <RemoteEditorModal
-          path={editingRemote.path}
-          name={editingRemote.name}
-          onSaved={remote.reload}
-          onClose={() => setEditingRemote(null)}
-        />
-      )}
-      {confirm && <ConfirmDialog title={confirm.title} message={confirm.message} confirmLabel={confirm.confirmLabel} onConfirm={confirm.action} onClose={() => setConfirm(null)} />}
-      {prompt && (
+      {overlays.prompt && (
         <PromptDialog
-          title={prompt.title}
-          label={prompt.label}
-          initialValue={prompt.initialValue}
-          confirmLabel={prompt.confirmLabel}
-          placeholder={prompt.placeholder}
-          onConfirm={prompt.action}
-          onClose={() => setPrompt(null)}
+          title={overlays.prompt.title}
+          label={overlays.prompt.label}
+          initialValue={overlays.prompt.initialValue}
+          confirmLabel={overlays.prompt.confirmLabel}
+          placeholder={overlays.prompt.placeholder}
+          onConfirm={overlays.prompt.action}
+          onClose={() => setOverlay({ prompt: null })}
         />
       )}
-      {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
+      {overlays.menu && <ContextMenu x={overlays.menu.x} y={overlays.menu.y} items={overlays.menu.items} onClose={() => setOverlay({ menu: null })} />}
     </div>
   )
 }

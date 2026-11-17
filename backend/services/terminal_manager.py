@@ -1,12 +1,26 @@
-"""SSH interaktif terminal oturum yönetimi (PuTTY benzeri kabuk)."""
+"""SSH etkileşimli terminal oturumları (xterm.js ↔ WebSocket ↔ paramiko kanalı)."""
 from __future__ import annotations
 
+import codecs
 import json
 import threading
 import uuid
 from dataclasses import dataclass
 
 import file_service as files
+
+MIN_COLS, MAX_COLS = 20, 500
+MIN_ROWS, MAX_ROWS = 5, 200
+
+
+def clamp_size(cols, rows) -> tuple[int, int]:
+    """İstemciden gelen terminal boyutunu doğrular; geçersiz değerde varsayılana döner."""
+    try:
+        cols = int(cols or 80)
+        rows = int(rows or 24)
+    except (TypeError, ValueError):
+        raise files.FileServiceError("Terminal boyutu sayı olmalı", 400)
+    return max(MIN_COLS, min(MAX_COLS, cols)), max(MIN_ROWS, min(MAX_ROWS, rows))
 
 
 @dataclass
@@ -24,13 +38,14 @@ class TerminalManager:
         self._lock = threading.Lock()
 
     def open_from_session(self, cols: int = 80, rows: int = 24) -> TerminalSession:
+        cols, rows = clamp_size(cols, rows)
         with self._sessions.lock:
             conn = self._sessions.state.connection
             conn_type = self._sessions.state.type
             if conn is None or conn_type != "SFTP" or getattr(conn, "client", None) is None:
                 raise files.FileServiceError("Terminal açmak için etkin bir SFTP bağlantısı gerekli.", 409, "sftp_required")
             try:
-                channel = conn.client.invoke_shell(term="xterm-256color", width=max(20, cols), height=max(5, rows))
+                channel = conn.client.invoke_shell(term="xterm-256color", width=cols, height=rows)
             except Exception as exc:
                 raise files.FileServiceError(f"SSH kabuğu açılamadı: {exc}", 502, type(exc).__name__) from exc
 
@@ -48,10 +63,14 @@ class TerminalManager:
         key_path: str | None = None,
         cols: int = 80,
         rows: int = 24,
+        trusted_fingerprint: str | None = None,
     ) -> TerminalSession:
-        conn = self._sessions.connect_server("SFTP", host, port, username, password, key_path=key_path)
+        cols, rows = clamp_size(cols, rows)
+        conn = self._sessions.connect_server(
+            "SFTP", host, port, username, password, key_path=key_path, trusted_fingerprint=trusted_fingerprint,
+        )
         try:
-            channel = conn.client.invoke_shell(term="xterm-256color", width=max(20, cols), height=max(5, rows))
+            channel = conn.client.invoke_shell(term="xterm-256color", width=cols, height=rows)
         except Exception as exc:
             conn.close()
             raise files.FileServiceError(f"SSH kabuğu açılamadı: {exc}", 502, type(exc).__name__) from exc
@@ -95,6 +114,9 @@ class TerminalManager:
             return
 
         stop_event = threading.Event()
+        # Çok baytlı UTF-8 karakter (ör. "ğ", emoji) iki okuma arasında bölünebilir; artımlı
+        # çözücü yarım baytları bir sonraki parçaya saklar, ekranda "�" görünmez.
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
         def pump_output() -> None:
             try:
@@ -104,7 +126,9 @@ class TerminalManager:
                     data = term.channel.recv(4096)
                     if not data:
                         break
-                    ws.send(json.dumps({"type": "output", "data": data.decode("utf-8", errors="replace")}))
+                    text = decoder.decode(data)
+                    if text:
+                        ws.send(json.dumps({"type": "output", "data": text}))
             except Exception:
                 pass
             finally:
@@ -132,9 +156,11 @@ class TerminalManager:
                     if isinstance(payload, str) and payload:
                         term.channel.send(payload)
                 elif kind == "resize":
-                    cols = int(msg.get("cols") or 80)
-                    rows = int(msg.get("rows") or 24)
-                    term.channel.resize_pty(width=max(20, cols), height=max(5, rows))
+                    try:
+                        cols, rows = clamp_size(msg.get("cols"), msg.get("rows"))
+                    except files.FileServiceError:
+                        continue
+                    term.channel.resize_pty(width=cols, height=rows)
         except Exception:
             pass
         finally:

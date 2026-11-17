@@ -12,7 +12,7 @@ afterEach(() => {
 describe('RemoteEditorModal', () => {
   it('loads remote text and saves changes', async () => {
     const user = userEvent.setup()
-    vi.spyOn(api, 'readRemoteText').mockResolvedValue({ path: '/app.conf', content: 'port=80' })
+    vi.spyOn(api, 'readRemoteText').mockResolvedValue({ path: '/app.conf', content: 'port=80', encoding: 'cp1254', newline: '\r\n' })
     const writeSpy = vi.spyOn(api, 'writeRemoteText').mockResolvedValue({ path: '/app.conf', size: 9 })
     const onSaved = vi.fn()
     const onClose = vi.fn()
@@ -24,7 +24,8 @@ describe('RemoteEditorModal', () => {
     await user.type(box, 'port=443')
     await user.click(screen.getByRole('button', { name: 'Uzak sunucuya kaydet' }))
 
-    expect(writeSpy).toHaveBeenCalledWith('/app.conf', 'port=443')
+    expect(writeSpy).toHaveBeenCalledWith('/app.conf', 'port=443', { encoding: 'cp1254', newline: '\r\n' })
+    expect(screen.getByText('Windows-1254 · CRLF')).toBeInTheDocument()
     expect(onSaved).toHaveBeenCalled()
     expect(onClose).toHaveBeenCalled()
   })

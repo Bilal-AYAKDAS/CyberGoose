@@ -9,8 +9,8 @@ export function useBookmarks() {
   const [bookmarksError, setBookmarksError] = useState<string | null>(null)
   const [bookmarksOpen, setBookmarksOpen] = useState(false)
 
+  // Kenar çubuğu yer imlerini her zaman gösterir; açılışta ve panel açıldığında yenilenir.
   useEffect(() => {
-    if (!bookmarksOpen) return
     let active = true
     api.listBookmarks()
       .then((items) => {

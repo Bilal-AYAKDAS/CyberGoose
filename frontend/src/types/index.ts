@@ -12,6 +12,8 @@ export type ApiEntry = {
   /** ISO-8601; sağlayıcı vermezse null. */
   modified: string | null
   path: string
+  /** Nokta ile başlayan veya Windows'ta gizli öznitelikli öğe. */
+  hidden?: boolean
 }
 
 export type FileEntry = ApiEntry & { source: EntrySource }
@@ -32,7 +34,8 @@ export type FileInspection = {
   Size: number
   Change: string
   filemod: string
-  sha256: string
+  /** 1 GB üstü dosyalarda hesaplanmaz (null). */
+  sha256: string | null
   preview: string | null
   previewTruncated: boolean
 }
@@ -66,6 +69,10 @@ export type ConnectionProfile = {
   hasPassword: boolean
   /** Kayıtlı (silinebilir/düzenlenebilir) mi, yerleşik bulut girişi mi. */
   saved: boolean
+  /** Bulut hesabı için uygulama anahtarları ayarlanmış mı (ayarsızsa kenar çubuğunda soluk). */
+  configured?: boolean
+  /** Kaydedilmeden açılan hızlı bağlantı. */
+  quick?: boolean
 }
 
 export type FolderBookmark = {
@@ -84,6 +91,10 @@ export type TransferItem = {
   direction: 'upload' | 'download'
   localDir: string
   remoteDir: string
+  /** İşin bağlı olduğu backend oturumu: kullanıcı bağlantı değiştirse de dosya bu sunucuya gider. */
+  sessionId: number | null
+  /** Öğenin eklendiği bağlantı; oturum kapandıktan sonra aynı bağlantı yeniden açılınca yeniden denenebilir. */
+  connectionId?: string
   /** Rota metni: `C:\Users\… → host:/var/www`. */
   from: string
   to: string
@@ -93,6 +104,8 @@ export type TransferItem = {
   jobId?: string
   transferred?: number
   overwrite?: boolean
+  /** Yarım kalan aktarımı kaldığı yerden sürdür (FTP/SFTP). */
+  resume?: boolean
   error?: string
   /** Teknik hata kodu; tooltip'te gösterilir. */
   errorCode?: string
