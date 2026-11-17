@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, nativeTheme, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, nativeTheme, Notification, shell, Tray } = require('electron');
 const { execFile } = require('node:child_process');
 const path = require('node:path');
 const { startBackend } = require('./backend.cjs');
@@ -53,6 +53,25 @@ function createWindow() {
   } else {
     window.loadFile(path.join(__dirname, '..', 'frontend', 'dist', 'index.html'));
   }
+  return window;
+}
+
+let mainWindow = null;
+let tray = null;
+
+function setupTray() {
+  if (tray) return;
+  tray = new Tray(path.join(__dirname, 'assets', 'icon.png'));
+  tray.setToolTip('CyberGoose');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'CyberGoose\'u Göster', click: () => { mainWindow?.show(); mainWindow?.focus(); } },
+    { type: 'separator' },
+    { label: 'Çıkış', click: () => { app.quit(); } },
+  ]));
+  tray.on('double-click', () => {
+    mainWindow?.show();
+    mainWindow?.focus();
+  });
 }
 
 // Renderer tema değiştirdiğinde başlık çubuğu overlay'i ve pencere zemini eşlenir.
@@ -90,6 +109,12 @@ ipcMain.handle('cybergoose:launch-rdp', async (_event, host, port) => {
   execFile('mstsc.exe', [`/v:${target}`], { windowsHide: false }, () => {});
 });
 
+ipcMain.on('cybergoose:notify', (_event, title, body) => {
+  if (Notification.isSupported()) {
+    new Notification({ title: String(title || 'CyberGoose'), body: String(body || '') }).show();
+  }
+});
+
 // Yerel API tek sefer başlatılır; renderer `cyberGoose.backend()` ile bekler.
 let backendPromise = null;
 let backendHandle = null;
@@ -114,11 +139,12 @@ ipcMain.handle('cybergoose:backend', () => ensureBackend());
 
 app.whenReady().then(() => {
   ensureBackend().catch(() => {});
-  createWindow();
+  mainWindow = createWindow();
+  setupTray();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      mainWindow = createWindow();
     }
   });
 });

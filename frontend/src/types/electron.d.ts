@@ -10,6 +10,7 @@ declare global {
       /** Yerel API hazır olunca adresi ve istek anahtarı; başlatılamazsa reddedilir. */
       backend?: () => Promise<{ base: string; token: string }>
       launchRdp?: (host: string, port?: number) => Promise<void>
+      notify?: (title: string, body: string) => void
     }
   }
 }

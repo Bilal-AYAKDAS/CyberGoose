@@ -8,13 +8,14 @@ type TitleBarProps = {
   connection: ConnectionProfile | null
   theme: Theme
   onToggleTheme: () => void
+  onOpenSettings?: () => void
 }
 
 /**
  * Başlık çubuğu (36px, bg-app). Electron'da sürüklenebilir alan; butonlar `no-drag`.
  * macOS trafik ışıkları ve Windows `titleBarOverlay` için yer CSS'te ayrılır.
  */
-export function TitleBar({ connection, theme, onToggleTheme }: TitleBarProps) {
+export function TitleBar({ connection, theme, onToggleTheme, onOpenSettings }: TitleBarProps) {
   const subtitle = connection
     ? `${connection.username ? `${connection.username}@` : ''}${connection.host}`
     : null
@@ -23,6 +24,16 @@ export function TitleBar({ connection, theme, onToggleTheme }: TitleBarProps) {
       <span className="brand"><GooseMark height={16} />CyberGoose</span>
       {subtitle && <span className="cg-titlebar-sub">— {subtitle}</span>}
       <span className="grow" />
+      {onOpenSettings && (
+        <button
+          className="cg-btn cg-btn-ghost cg-btn-sm cg-no-drag"
+          aria-label="Ayarlar"
+          title="Ayarlar"
+          onClick={onOpenSettings}
+        >
+          Ayarlar
+        </button>
+      )}
       <button
         className="cg-btn cg-btn-icon cg-btn-ghost cg-btn-sm cg-no-drag"
         aria-label="Tema değiştir"

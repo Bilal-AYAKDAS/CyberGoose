@@ -9,11 +9,32 @@ type UseTransferQueueOptions = {
   localPath: string | null
   remotePath: string
   activeConnection: ConnectionProfile | null
+  overwriteDefault?: 'ask' | 'overwrite'
+  notifications?: boolean
   reloadLocal: () => void
   reloadRemote: () => void
 }
 
-export function useTransferQueue({ localPath, remotePath, activeConnection, reloadLocal, reloadRemote }: UseTransferQueueOptions) {
+function joinLocal(base: string, rel: string) {
+  if (!rel) return base
+  const sep = base.includes('\\') ? '\\' : '/'
+  return `${base.replace(/[\\/]+$/, '')}${sep}${rel.split('/').join(sep)}`
+}
+
+function joinRemote(base: string, rel: string) {
+  if (!rel) return base
+  return base === '/' ? `/${rel}` : `${base.replace(/\/+$/, '')}/${rel}`
+}
+
+export function useTransferQueue({
+  localPath,
+  remotePath,
+  activeConnection,
+  overwriteDefault = 'ask',
+  notifications = true,
+  reloadLocal,
+  reloadRemote,
+}: UseTransferQueueOptions) {
   const [transfers, setTransfers] = useState<TransferItem[]>([])
   const [queueOpen, setQueueOpen] = useState(true)
   const runningRef = useRef(false)
@@ -33,11 +54,64 @@ export function useTransferQueue({ localPath, remotePath, activeConnection, relo
       to: direction === 'upload' ? remoteLabel : localPath,
       size: entry.size,
       transferred: 0,
+      overwrite: overwriteDefault === 'overwrite',
       status: 'queued',
     }))
     setTransfers((items) => [...items, ...added])
     setQueueOpen(true)
-  }, [activeConnection, localPath, remotePath])
+  }, [activeConnection, localPath, overwriteDefault, remotePath])
+
+  const enqueueFolders = useCallback(async (folders: FileEntry[], direction: TransferItem['direction']) => {
+    if (!localPath || !remotePath || !activeConnection) return
+    const side = direction === 'upload' ? 'local' : 'remote'
+    const targetSide = direction === 'upload' ? 'remote' : 'local'
+    const allItems: TransferItem[] = []
+    for (const folder of folders) {
+      if (folder.kind !== 'folder') continue
+      const plan = await api.planFolderTransfer(side, folder.path)
+      const baseLocal = direction === 'download' ? joinLocal(localPath, plan.rootName) : folder.path
+      const baseRemote = direction === 'upload' ? joinRemote(remotePath, plan.rootName) : folder.path
+      const targetRootParent = direction === 'upload' ? remotePath : localPath
+      await api.mkdir(targetSide, targetRootParent, plan.rootName).catch(() => undefined)
+
+      const createdDirs = new Set<string>([''])
+      for (const item of plan.files) {
+        if (item.relativeDir && !createdDirs.has(item.relativeDir)) {
+          const parts = item.relativeDir.split('/')
+          let acc = ''
+          for (const part of parts) {
+            const parentRel = acc
+            acc = acc ? `${acc}/${part}` : part
+            if (!createdDirs.has(acc)) {
+              const parentAbs = direction === 'upload' ? joinRemote(baseRemote, parentRel) : joinLocal(baseLocal, parentRel)
+              await api.mkdir(targetSide, parentAbs, part).catch(() => undefined)
+              createdDirs.add(acc)
+            }
+          }
+        }
+        const lDir = joinLocal(baseLocal, item.relativeDir)
+        const rDir = joinRemote(baseRemote, item.relativeDir)
+        const remoteLabel = `${connectionLabel(activeConnection)}:${rDir}`
+        allItems.push({
+          id: crypto.randomUUID(),
+          name: item.name,
+          direction,
+          localDir: lDir,
+          remoteDir: rDir,
+          from: direction === 'upload' ? lDir : remoteLabel,
+          to: direction === 'upload' ? remoteLabel : lDir,
+          size: item.size,
+          transferred: 0,
+          overwrite: overwriteDefault === 'overwrite',
+          status: 'queued',
+        })
+      }
+    }
+    if (allItems.length) {
+      setTransfers((items) => [...items, ...allItems])
+      setQueueOpen(true)
+    }
+  }, [activeConnection, localPath, overwriteDefault, remotePath])
 
   const enqueue = useCallback((entry: FileEntry, direction: TransferItem['direction']) => {
     enqueueMany([entry], direction)
@@ -81,6 +155,9 @@ export function useTransferQueue({ localPath, remotePath, activeConnection, relo
           } : item))
           if (next.direction === 'upload') reloadRemote()
           else reloadLocal()
+          if (notifications && !transfers.some((item) => item.id !== next.id && item.status === 'queued')) {
+            window.cyberGoose?.notify?.('CyberGoose Aktarım Tamamlandı', `${next.name} aktarıldı.`)
+          }
         } else if (latest.status === 'cancelled') {
           setTransfers((items) => items.map((item) => item.id === next.id ? { ...item, status: 'cancelled', finishedAt: Date.now() } : item))
         } else {
@@ -104,7 +181,7 @@ export function useTransferQueue({ localPath, remotePath, activeConnection, relo
         runningRef.current = false
       }
     })
-  }, [transfers, reloadLocal, reloadRemote])
+  }, [transfers, notifications, reloadLocal, reloadRemote])
 
   const cancelTransfer = useCallback((id: string) => {
     const target = transfers.find((item) => item.id === id)
@@ -141,6 +218,7 @@ export function useTransferQueue({ localPath, remotePath, activeConnection, relo
     setQueueOpen,
     enqueue,
     enqueueMany,
+    enqueueFolders,
     cancelTransfer,
     retryTransfer,
     removeTransfer,

@@ -82,6 +82,12 @@ class TerminalManager:
                 pass
         return True
 
+    def close_session_terminals(self) -> None:
+        with self._lock:
+            session_ids = [tid for tid, term in self._terminals.items() if term.owned_client is None]
+        for tid in session_ids:
+            self.close(tid)
+
     def attach_websocket(self, ws, terminal_id: str) -> None:
         term = self.get(terminal_id)
         if term is None:

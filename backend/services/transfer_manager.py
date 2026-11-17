@@ -32,16 +32,26 @@ class TransferJob:
 
 
 class TransferManager:
+    MAX_HISTORY = 200
+
     def __init__(self, session_manager):
         self._sessions = session_manager
         self._jobs: dict[str, TransferJob] = {}
         self._lock = threading.Lock()
+
+    def _prune_finished(self) -> None:
+        if len(self._jobs) <= self.MAX_HISTORY:
+            return
+        finished = [jid for jid, job in self._jobs.items() if job.status != "transferring"]
+        for jid in finished[: max(0, len(self._jobs) - self.MAX_HISTORY)]:
+            self._jobs.pop(jid, None)
 
     def start(self, direction: str, name: str, local_dir: str, remote_dir: str, overwrite: bool = False) -> TransferJob:
         if self._sessions.state.connection is None:
             raise files.FileServiceError("Uzak bağlantı yok. Önce bir bağlantı açın.", 409, "not_connected")
         job = TransferJob(id=str(uuid.uuid4()))
         with self._lock:
+            self._prune_finished()
             self._jobs[job.id] = job
 
         def on_progress(done: int, total: int | None) -> None:

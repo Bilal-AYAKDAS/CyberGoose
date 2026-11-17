@@ -126,17 +126,24 @@ export const api = {
   disconnect: () => post<{ connected: false }>('/api/disconnect'),
 
   localHome: () => apiRequest<{ path: string }>('/api/local/home'),
+  localDrives: () => apiRequest<{ drives: string[] }>('/api/local/drives'),
   listLocal: (path: string | null) => post<DirectoryListing>('/api/local/list', { path }),
   getLocalFileInfo: (path: string) => post<FileInspection>('/api/local/info', { path }),
 
   listRemote: (path: string) => post<DirectoryListing>('/api/remote/list', { path }),
   getRemoteDetails: (path: string) => post<RemoteDetails>('/api/remote/info', { path }),
   chmodRemote: (path: string, mode: string) => post<RemoteDetails>('/api/remote/chmod', { path, mode }),
+  readRemoteText: (path: string) => post<{ path: string; content: string }>('/api/remote/read', { path }),
+  writeRemoteText: (path: string, content: string) => post<{ path: string; size: number }>('/api/remote/write', { path, content }),
 
   transfer: (request: TransferRequest) => post<{ name: string; size: number; to: string }>('/api/transfer', request),
   startTransfer: (request: TransferRequest) => post<TransferJobStatus>('/api/transfers', request),
   getTransfer: (jobId: string) => apiRequest<TransferJobStatus>(`/api/transfers/${encodeURIComponent(jobId)}`),
   cancelTransfer: (jobId: string) => post<TransferJobStatus>(`/api/transfers/${encodeURIComponent(jobId)}/cancel`),
+  planFolderTransfer: (side: 'local' | 'remote', path: string) =>
+    post<{ rootName: string; files: { relativeDir: string; name: string; size: number | null }[] }>('/api/transfer/plan', { side, path }),
+  createZip: (parentDir: string, names: string[], name: string) =>
+    post<{ name: string; path: string; size: number }>('/api/archive', { side: 'local', parentDir, names, name }),
   mkdir: (side: 'local' | 'remote', path: string, name: string) =>
     post<{ name: string; path: string }>('/api/mkdir', { side, path, name }),
   renameEntry: (side: 'local' | 'remote', path: string, name: string) =>
@@ -167,4 +174,10 @@ export const api = {
     keyPath?: string
   }) => post<{ id: string }>('/api/terminal/connect', request),
   closeTerminal: (id: string) => apiRequest<{ closed: string }>(`/api/terminal/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  listTunnels: () => apiRequest<{ id: string; localPort: number; remoteHost: string; remotePort: number }[]>('/api/tunnels'),
+  createTunnel: (input: { localPort: number; remoteHost: string; remotePort: number }) =>
+    post<{ id: string; localPort: number; remoteHost: string; remotePort: number }>('/api/tunnels', input),
+  deleteTunnel: (id: string) =>
+    apiRequest<{ closed: string }>(`/api/tunnels/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }

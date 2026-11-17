@@ -25,6 +25,10 @@ class SessionManager:
     def __init__(self):
         self.state = ConnectionState()
         self.lock = threading.Lock()
+        self._cleanup_hooks = []
+
+    def register_cleanup(self, callback) -> None:
+        self._cleanup_hooks.append(callback)
 
     def session_info(self) -> dict:
         return {
@@ -34,6 +38,11 @@ class SessionManager:
         }
 
     def close_current(self) -> None:
+        for hook in self._cleanup_hooks:
+            try:
+                hook()
+            except Exception:
+                logger.exception("Oturum temizleme kancası başarısız")
         if self.state.connection is not None and hasattr(self.state.connection, "close"):
             try:
                 self.state.connection.close()

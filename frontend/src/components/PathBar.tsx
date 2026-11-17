@@ -13,6 +13,7 @@ type PathBarProps = {
   path: string | null
   /** Ctrl+L / ⌘L ile düzenleme kipine geçmek için dışarıdan artırılan sayaç. */
   editSignal?: number
+  drives?: string[]
   onNavigate?: (path: string) => void
   onRefresh?: () => void
 }
@@ -23,7 +24,7 @@ type PathBarProps = {
  * Çift tık veya Ctrl+L / ⌘L yolu düzenlenebilir input'a çevirir (Enter git, Esc vazgeç).
  * Odaktaki panelin 2px turuncu üst çizgisi CSS'te `.cg-pane.is-focused .cg-pathbar` ile verilir.
  */
-export function PathBar({ tag, crumbs, rootLabel, path, editSignal = 0, onNavigate, onRefresh }: PathBarProps) {
+export function PathBar({ tag, crumbs, rootLabel, path, editSignal = 0, drives, onNavigate, onRefresh }: PathBarProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -56,6 +57,18 @@ export function PathBar({ tag, crumbs, rootLabel, path, editSignal = 0, onNaviga
   return (
     <div className="cg-pathbar">
       {tag}
+      {drives && drives.length > 1 && onNavigate && (
+        <select
+          className="cg-drive-select mono"
+          aria-label="Sürücü seç"
+          value={drives.find((d) => (path ?? '').toLowerCase().startsWith(d.toLowerCase())) ?? drives[0]}
+          onChange={(event) => onNavigate(event.target.value)}
+        >
+          {drives.map((drive) => (
+            <option key={drive} value={drive}>{drive}</option>
+          ))}
+        </select>
+      )}
       {editing ? (
         <input
           ref={inputRef}

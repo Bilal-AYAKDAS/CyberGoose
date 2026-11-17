@@ -12,4 +12,5 @@ contextBridge.exposeInMainWorld('cyberGoose', {
   // Yerel API hazır olunca adresini ve istek anahtarını verir; başlatılamazsa hata fırlatır.
   backend: () => ipcRenderer.invoke('cybergoose:backend'),
   launchRdp: (host, port) => ipcRenderer.invoke('cybergoose:launch-rdp', String(host), port),
+  notify: (title, body) => ipcRenderer.send('cybergoose:notify', String(title), String(body)),
 });

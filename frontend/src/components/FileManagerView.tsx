@@ -17,6 +17,7 @@ export type PaneData = DirectoryState & {
 type FileManagerViewProps = {
   local: PaneData
   remote: PaneData
+  drives?: string[]
   connection: ConnectionProfile | null
   connectionStatus: ConnectionStatus
   focusedPane: PaneId
@@ -40,7 +41,7 @@ const MAX_FRACTION = 0.75
  * ve seçim tonu (bg-selected / bg-selected-inactive) söyler.
  */
 export function FileManagerView(props: FileManagerViewProps) {
-  const { local, remote, connection, connectionStatus, focusedPane, selection, onFocusPane, onSelect, onOpen, onNavigate, onConnect, onNewConnection, onContextMenu, onDropTransfer } = props
+  const { local, remote, drives, connection, connectionStatus, focusedPane, selection, onFocusPane, onSelect, onOpen, onNavigate, onConnect, onNewConnection, onContextMenu, onDropTransfer } = props
   const [fraction, setFraction] = useState(0.5)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -145,6 +146,7 @@ export function FileManagerView(props: FileManagerViewProps) {
           tag={<ProtocolTag local />}
           crumbs={local.crumbs}
           path={local.path}
+          drives={drives}
           editSignal={local.editSignal}
           onNavigate={(path) => onNavigate('local', path)}
           onRefresh={local.reload}

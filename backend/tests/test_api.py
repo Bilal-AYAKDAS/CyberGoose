@@ -481,3 +481,102 @@ def test_ssh_terminal_direct_connect(client, monkeypatch):
     term_id = opened.get_json()["id"]
     assert client.delete(f"/api/terminal/{term_id}").status_code == 200
     assert closed == ["channel", "conn"]
+
+
+def test_local_drives(client):
+    resp = client.get("/api/local/drives")
+    assert resp.status_code == 200
+    drives = resp.get_json()["drives"]
+    assert isinstance(drives, list) and len(drives) >= 1
+
+
+def test_folder_transfer_plan_and_zip_archive(client, ftp_server, tmp_path):
+    import zipfile
+
+    (tmp_path / "proje" / "alt").mkdir(parents=True)
+    (tmp_path / "proje" / "a.txt").write_text("aaa", encoding="utf-8")
+    (tmp_path / "proje" / "alt" / "b.txt").write_text("bbb", encoding="utf-8")
+
+    plan = client.post("/api/transfer/plan", json={"side": "local", "path": str(tmp_path / "proje")})
+    assert plan.status_code == 200
+    body = plan.get_json()
+    assert body["rootName"] == "proje"
+    assert {(f["relativeDir"], f["name"]) for f in body["files"]} == {("", "a.txt"), ("alt", "b.txt")}
+
+    archived = client.post("/api/archive", json={"side": "local", "parentDir": str(tmp_path), "names": ["proje"], "name": "yedek"})
+    assert archived.status_code == 201
+    zip_path = tmp_path / "yedek.zip"
+    assert zip_path.is_file()
+    with zipfile.ZipFile(zip_path) as zf:
+        names = {n.replace("\\", "/") for n in zf.namelist()}
+        assert "proje/a.txt" in names and "proje/alt/b.txt" in names
+
+    assert connect_ftp(client, ftp_server["port"]).status_code == 200
+    rplan = client.post("/api/transfer/plan", json={"side": "remote", "path": "/"})
+    assert rplan.status_code == 200
+    assert any(f["name"] == "readme.txt" for f in rplan.get_json()["files"])
+
+
+def test_remote_read_and_write_text_ftp(client, ftp_server):
+    assert connect_ftp(client, ftp_server["port"]).status_code == 200
+    read_resp = client.post("/api/remote/read", json={"path": "/readme.txt"})
+    assert read_resp.status_code == 200
+    assert "Merhaba FTP" in read_resp.get_json()["content"]
+
+    write_resp = client.post("/api/remote/write", json={"path": "/notlar.txt", "content": "guncel icerik"})
+    assert write_resp.status_code == 200
+    assert (ftp_server["root"] / "notlar.txt").read_text(encoding="utf-8") == "guncel icerik"
+
+
+def test_ssh_tunnel_open_list_close(client, monkeypatch):
+    from types import SimpleNamespace
+    import app as backend
+
+    class FakeTransport:
+        def is_active(self):
+            return True
+
+    fake_conn = SimpleNamespace(client=SimpleNamespace(get_transport=lambda: FakeTransport()))
+    monkeypatch.setattr(backend.sessions, "state", SimpleNamespace(connection=fake_conn, type="SFTP", connection_id="1", pending_dropbox=None))
+
+    created = client.post("/api/tunnels", json={"localPort": 0, "remoteHost": "127.0.0.1", "remotePort": 5432})
+    assert created.status_code == 201
+    tunnel = created.get_json()
+    assert tunnel["localPort"] > 0
+
+    listed = client.get("/api/tunnels").get_json()
+    assert any(t["id"] == tunnel["id"] for t in listed)
+
+    assert client.delete(f"/api/tunnels/{tunnel['id']}").status_code == 200
+    assert client.delete(f"/api/tunnels/{tunnel['id']}").status_code == 404
+
+
+def test_disconnect_cleans_up_tunnels_and_session_terminals(client, monkeypatch):
+    from types import SimpleNamespace
+    import app as backend
+
+    closed = []
+
+    class FakeChannel:
+        def close(self):
+            closed.append("terminal")
+
+    class FakeTransport:
+        def is_active(self):
+            return True
+
+    fake_conn = SimpleNamespace(
+        client=SimpleNamespace(
+            invoke_shell=lambda **_kw: FakeChannel(),
+            get_transport=lambda: FakeTransport(),
+        ),
+        close=lambda: closed.append("conn"),
+    )
+    monkeypatch.setattr(backend.sessions, "state", SimpleNamespace(connection=fake_conn, type="SFTP", connection_id="1", pending_dropbox=None))
+
+    assert client.post("/api/terminal/open", json={"cols": 80, "rows": 24}).status_code == 201
+    assert client.post("/api/tunnels", json={"localPort": 0, "remoteHost": "127.0.0.1", "remotePort": 5432}).status_code == 201
+
+    assert client.post("/api/disconnect", json={}).status_code == 200
+    assert "terminal" in closed and "conn" in closed
+    assert client.get("/api/tunnels").get_json() == []

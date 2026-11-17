@@ -12,10 +12,13 @@ Sağlayıcı tipi, ağır SDK'ları içe aktarmamak için nesnenin öznitelikler
 """
 from __future__ import annotations
 
+import io
 import os
 import posixpath
 import shutil
 import stat
+import string
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -74,6 +77,14 @@ def _validate_name(name: str) -> str:
 
 def home_directory() -> str:
     return str(Path.home())
+
+
+def list_local_drives() -> list[str]:
+    if os.name != 'nt':
+        return ['/']
+    if hasattr(os, 'listdrives'):
+        return list(os.listdrives())
+    return [f'{letter}:\\' for letter in string.ascii_uppercase if os.path.exists(f'{letter}:\\')]
 
 
 def local_crumbs(path: str) -> list[dict]:
@@ -795,6 +806,149 @@ def rename_remote(conn, path: str, new_name: str) -> dict:
     except Exception as error:
         _raise_provider_error('Yeniden adlandırılamadı', error)
     return {"name": new_name, "path": destination}
+
+
+MAX_REMOTE_EDIT_BYTES = 256 * 1024
+
+
+def plan_local_folder(path: str) -> dict:
+    root = Path(path)
+    if not root.is_dir():
+        raise FileServiceError('Klasör bulunamadı', 404)
+    collected = []
+    for current, _dirs, filenames in os.walk(root):
+        rel = Path(current).relative_to(root)
+        rel_str = '' if str(rel) == '.' else rel.as_posix()
+        for fname in filenames:
+            fpath = Path(current) / fname
+            try:
+                fsize = fpath.stat().st_size
+            except OSError:
+                fsize = None
+            collected.append({"relativeDir": rel_str, "name": fname, "size": fsize})
+    return {"rootName": root.name, "files": collected}
+
+
+def plan_remote_folder(conn, path: str) -> dict:
+    remote_root = normalize_remote(path)
+    root_name = posixpath.basename(remote_root) or 'root'
+    collected = []
+
+    def walk(current_path: str, rel_prefix: str) -> None:
+        listing = list_remote(conn, current_path)
+        for entry in listing["entries"]:
+            if entry["kind"] == "folder":
+                next_rel = entry["name"] if not rel_prefix else f"{rel_prefix}/{entry['name']}"
+                walk(entry["path"], next_rel)
+            else:
+                collected.append({"relativeDir": rel_prefix, "name": entry["name"], "size": entry["size"]})
+
+    walk(remote_root, '')
+    return {"rootName": root_name, "files": collected}
+
+
+def create_local_zip(parent_dir: str, names: list[str], archive_name: str) -> dict:
+    archive_name = _validate_name(archive_name.strip())
+    if not archive_name.lower().endswith('.zip'):
+        archive_name = f'{archive_name}.zip'
+    parent = Path(parent_dir)
+    if not parent.is_dir():
+        raise FileServiceError('Klasör bulunamadı', 404)
+    dest = parent / archive_name
+    if dest.exists():
+        raise FileServiceError('Bu adda bir arşiv zaten var', 409, 'exists')
+    if not names:
+        raise FileServiceError('Arşivlenecek öğe seçilmedi', 400)
+    with zipfile.ZipFile(dest, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+        for raw_name in names:
+            clean = _validate_name(raw_name)
+            target = parent / clean
+            if not target.exists():
+                raise FileServiceError(f'Öğe bulunamadı: {clean}', 404)
+            if target.is_dir():
+                for root, _dirs, files in os.walk(target):
+                    for fname in files:
+                        fpath = Path(root) / fname
+                        zf.write(fpath, arcname=str(fpath.relative_to(parent)))
+            else:
+                zf.write(target, arcname=clean)
+    return {"name": archive_name, "path": str(dest), "size": dest.stat().st_size}
+
+
+def read_remote_text(conn, path: str) -> dict:
+    provider = provider_of(conn)
+    remote_file = normalize_remote(path)
+    buf = io.BytesIO()
+    try:
+        if provider == 'sftp':
+            st = conn.sftp.stat(remote_file)
+            if (st.st_size or 0) > MAX_REMOTE_EDIT_BYTES:
+                raise FileServiceError('Dosya düzenleme sınırı (256 KB) aşıldı', 400, 'too_large')
+            with conn.sftp.open(remote_file, 'rb') as handle:
+                buf.write(handle.read(MAX_REMOTE_EDIT_BYTES + 1))
+        elif provider == 'ftp':
+            conn.ftp.retrbinary(f'RETR {remote_file}', buf.write)
+        elif provider == 'dropbox':
+            _md, resp = conn.dbx.files_download(remote_file)
+            buf.write(resp.content[:MAX_REMOTE_EDIT_BYTES + 1])
+        elif provider == 'onedrive':
+            resp = conn.session.get(_onedrive_url(remote_file, '/content'), timeout=30)
+            if not resp.ok:
+                _onedrive_check(resp)
+            buf.write(resp.content[:MAX_REMOTE_EDIT_BYTES + 1])
+        else:
+            service = conn.service
+            found = _drive_find_file(service, _drive_resolve_folder(service, posixpath.dirname(remote_file)), posixpath.basename(remote_file))
+            if not found:
+                raise FileServiceError('Uzak dosya bulunamadı', 404)
+            from googleapiclient.http import MediaIoBaseDownload
+            downloader = MediaIoBaseDownload(buf, service.files().get_media(fileId=found['id']))
+            done = False
+            while not done and buf.tell() <= MAX_REMOTE_EDIT_BYTES:
+                _, done = downloader.next_chunk()
+    except FileServiceError:
+        raise
+    except Exception as error:
+        _raise_provider_error('Dosya okunamadı', error)
+    raw = buf.getvalue()
+    if len(raw) > MAX_REMOTE_EDIT_BYTES:
+        raise FileServiceError('Dosya düzenleme sınırı (256 KB) aşıldı', 400, 'too_large')
+    return {"path": remote_file, "content": raw.decode('utf-8', errors='replace')}
+
+
+def write_remote_text(conn, path: str, content: str) -> dict:
+    provider = provider_of(conn)
+    remote_file = normalize_remote(path)
+    data = content.encode('utf-8')
+    if len(data) > MAX_REMOTE_EDIT_BYTES:
+        raise FileServiceError('Dosya düzenleme sınırı (256 KB) aşıldı', 400, 'too_large')
+    try:
+        if provider == 'sftp':
+            with conn.sftp.open(remote_file, 'wb') as handle:
+                handle.write(data)
+        elif provider == 'ftp':
+            conn.ftp.storbinary(f'STOR {remote_file}', io.BytesIO(data))
+        elif provider == 'dropbox':
+            import dropbox
+            conn.dbx.files_upload(data, remote_file, mode=dropbox.files.WriteMode.overwrite)
+        elif provider == 'onedrive':
+            _onedrive_check(conn.session.put(_onedrive_url(remote_file, '/content'), data=data, timeout=30))
+        else:
+            service = conn.service
+            parent_id = _drive_resolve_folder(service, posixpath.dirname(remote_file))
+            name = posixpath.basename(remote_file)
+            found = _drive_find_file(service, parent_id, name)
+            from googleapiclient.http import MediaIoBaseUpload
+            media = MediaIoBaseUpload(io.BytesIO(data), mimetype='text/plain', resumable=False)
+            if found:
+                service.files().update(fileId=found['id'], media_body=media).execute()
+            else:
+                service.files().create(body={'name': name, 'parents': [parent_id]}, media_body=media, fields='id').execute()
+    except FileServiceError:
+        raise
+    except Exception as error:
+        _raise_provider_error('Dosya kaydedilemedi', error)
+    return {"path": remote_file, "size": len(data)}
 
 
 def remote_details(conn, path: str) -> dict:

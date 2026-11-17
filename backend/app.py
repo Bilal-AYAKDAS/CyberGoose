@@ -14,6 +14,7 @@ from db import DbMyFtp
 from services.session_manager import CLOUD_TYPES, SERVER_TYPES, SessionManager
 from services.terminal_manager import TerminalManager
 from services.transfer_manager import TransferManager
+from services.tunnel_manager import TunnelManager
 
 app = Flask(__name__)
 sock = Sock(app)
@@ -24,6 +25,9 @@ db = DbMyFtp()
 sessions = SessionManager()
 transfers = TransferManager(sessions)
 terminals = TerminalManager(sessions)
+tunnels = TunnelManager(sessions)
+sessions.register_cleanup(terminals.close_session_terminals)
+sessions.register_cleanup(tunnels.close_all)
 
 # Test ve geriye dönük uyumluluk için takma adlar
 state = sessions.state
@@ -142,6 +146,11 @@ def local_home():
     return jsonify({"path": files.home_directory()})
 
 
+@app.get("/api/local/drives")
+def local_drives():
+    return jsonify({"drives": files.list_local_drives()})
+
+
 @app.post("/api/local/list")
 def local_list():
     return jsonify(files.list_local(body().get("path")))
@@ -182,6 +191,25 @@ def remote_chmod():
     with sessions.lock:
         files.chmod_remote(sessions.state.connection, data.get("path"), data.get("mode"))
         return jsonify(files.remote_details(sessions.state.connection, data.get("path")))
+
+
+@app.post("/api/remote/read")
+def remote_read():
+    filepath = body().get("path")
+    if not filepath:
+        return error("Dosya yolu gerekli", 400)
+    with sessions.lock:
+        return jsonify(files.read_remote_text(sessions.state.connection, filepath))
+
+
+@app.post("/api/remote/write")
+def remote_write():
+    data = body()
+    filepath, content = data.get("path"), data.get("content")
+    if not filepath or content is None:
+        return error("Dosya yolu ve içerik gerekli", 400)
+    with sessions.lock:
+        return jsonify(files.write_remote_text(sessions.state.connection, filepath, str(content)))
 
 
 # ---------------------------------------------------------------- aktarım ve dosya işlemleri
@@ -233,6 +261,32 @@ def transfer():
         else:
             return error("Yön 'upload' veya 'download' olmalı", 400)
     return jsonify(result)
+
+
+@app.post("/api/transfer/plan")
+def plan_transfer():
+    data = body()
+    side, path = data.get("side"), data.get("path")
+    if not path:
+        return error("Klasör yolu gerekli", 400)
+    if side == "local":
+        return jsonify(files.plan_local_folder(path))
+    if side == "remote":
+        with sessions.lock:
+            return jsonify(files.plan_remote_folder(sessions.state.connection, path))
+    return error("Taraf 'local' veya 'remote' olmalı", 400)
+
+
+@app.post("/api/archive")
+def create_archive():
+    data = body()
+    side, parent_dir = data.get("side"), data.get("parentDir")
+    names, archive_name = data.get("names") or [], str(data.get("name") or "")
+    if side != "local":
+        return error("Arşivleme yalnızca yerel panelde desteklenir", 400)
+    if not (parent_dir and archive_name.strip()):
+        return error("Klasör yolu ve arşiv adı gerekli", 400)
+    return jsonify(files.create_local_zip(parent_dir, list(names), archive_name)), 201
 
 
 @app.post("/api/mkdir")
@@ -388,6 +442,34 @@ def close_terminal(terminal_id):
 @sock.route("/ws/terminal/<terminal_id>")
 def terminal_ws(ws, terminal_id):
     terminals.attach_websocket(ws, terminal_id)
+
+
+# ---------------------------------------------------------------- ssh tünelleri (port forwarding)
+
+@app.get("/api/tunnels")
+def list_tunnels():
+    return jsonify(tunnels.list())
+
+
+@app.post("/api/tunnels")
+def create_tunnel():
+    data = body()
+    remote_host = str(data.get("remoteHost") or "").strip()
+    try:
+        local_port = int(data.get("localPort") or 0)
+        remote_port = int(data.get("remotePort") or 0)
+    except (TypeError, ValueError):
+        return error("Portlar sayı olmalı", 400)
+    if not remote_host or not (0 <= local_port <= 65535) or not (1 <= remote_port <= 65535):
+        return error("Geçerli yerel port, uzak sunucu ve uzak port gerekli", 400)
+    return jsonify(tunnels.open(local_port, remote_host, remote_port)), 201
+
+
+@app.delete("/api/tunnels/<tunnel_id>")
+def delete_tunnel(tunnel_id):
+    if not tunnels.close(tunnel_id):
+        return error("Tünel bulunamadı", 404)
+    return jsonify({"closed": tunnel_id})
 
 
 def main():

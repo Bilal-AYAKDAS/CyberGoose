@@ -10,13 +10,17 @@ import { FileManagerView } from './components/FileManagerView'
 import { Notice } from './components/Notice'
 import { PromptDialog } from './components/PromptDialog'
 import { RemoteAccessModal, type DirectTerminalTarget, type RemoteAccessMode } from './components/RemoteAccessModal'
+import { RemoteEditorModal } from './components/RemoteEditorModal'
+import { SettingsModal } from './components/SettingsModal'
 import { Sidebar } from './components/Sidebar'
 import { TerminalDrawer } from './components/TerminalDrawer'
 import { TransferQueue } from './components/TransferQueue'
+import { TunnelModal } from './components/TunnelModal'
 import { useBookmarks } from './hooks/useBookmarks'
 import { toProfile, useConnections } from './hooks/useConnections'
 import { useDirectory } from './hooks/useDirectory'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
+import { useSettings } from './hooks/useSettings'
 import { useTheme } from './hooks/useTheme'
 import { useTransferQueue } from './hooks/useTransferQueue'
 import { api } from './services/apiClient'
@@ -41,9 +45,11 @@ const messageOf = (error: unknown, fallback: string) => (error instanceof Error 
  */
 function App({ onReady }: { onReady?: () => void }) {
   const { theme, toggleTheme } = useTheme()
+  const { settings, setSettings } = useSettings()
 
   // ---------------------------------------------------------------- paneller
   const [homePath, setHomePath] = useState<string | null>(null)
+  const [drives, setDrives] = useState<string[]>([])
   const [localPath, setLocalPath] = useState<string | null>(null)
   const [remotePath, setRemotePath] = useState('/')
   const [focusedPane, setFocusedPane] = useState<PaneId>('local')
@@ -134,6 +140,7 @@ function App({ onReady }: { onReady?: () => void }) {
         .then((items) => { if (active) { setSavedConnections(items.map(toProfile)); setConnectionsError(null) } })
         .catch((error) => { if (active) setConnectionsError(messageOf(error, 'Kayıtlı bağlantılar yüklenemedi')) }),
       api.localHome().then(({ path }) => { if (active) setHomePath(path) }),
+      api.localDrives?.().then(({ drives: found }) => { if (active) setDrives(found) }).catch(() => undefined),
       api.session().then((session) => {
         if (active && session.connected && session.connectionId) {
           setConnectedId(session.connectionId)
@@ -151,13 +158,22 @@ function App({ onReady }: { onReady?: () => void }) {
 
   // ---------------------------------------------------------------- yer imleri ve transferler
   const { bookmarks, bookmarksError, bookmarksOpen, setBookmarksOpen, addBookmark, deleteBookmark } = useBookmarks()
-  const { transfers, queueOpen, activeTransfer, setQueueOpen, enqueue, enqueueMany, cancelTransfer, retryTransfer, removeTransfer, clearFinished } = useTransferQueue({
+  const { transfers, queueOpen, activeTransfer, setQueueOpen, enqueue, enqueueMany, enqueueFolders, cancelTransfer, retryTransfer, removeTransfer, clearFinished } = useTransferQueue({
     localPath: local.path,
     remotePath,
     activeConnection,
+    overwriteDefault: settings.overwriteDefault,
+    notifications: settings.notifications,
     reloadLocal: local.reload,
     reloadRemote: remote.reload,
   })
+
+  const enqueueSelected = useCallback((entries: FileEntry[], direction: 'upload' | 'download') => {
+    const filesOnly = entries.filter((entry) => entry.kind === 'file')
+    const foldersOnly = entries.filter((entry) => entry.kind === 'folder')
+    if (filesOnly.length) enqueueMany(filesOnly, direction)
+    if (foldersOnly.length) void enqueueFolders(foldersOnly, direction)
+  }, [enqueueFolders, enqueueMany])
 
   const currentFolder = focusedPane === 'local'
     ? (local.path ? { label: local.crumbs.at(-1)?.name || local.path, path: local.path, connectionId: null } : null)
@@ -171,6 +187,9 @@ function App({ onReady }: { onReady?: () => void }) {
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [directTerminal, setDirectTerminal] = useState<DirectTerminalTarget | null>(null)
   const [remoteAccessModal, setRemoteAccessModal] = useState<RemoteAccessMode | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [tunnelsOpen, setTunnelsOpen] = useState(false)
+  const [editingRemote, setEditingRemote] = useState<FileEntry | null>(null)
 
   const reloadPane = (pane: PaneId) => {
     if (pane === 'local') local.reload()
@@ -232,13 +251,29 @@ function App({ onReady }: { onReady?: () => void }) {
     })
   }
 
+  const askCreateZip = (entries: FileEntry[]) => {
+    if (!local.path || !entries.length) return
+    const parentDir = local.path
+    const defaultName = entries.length === 1 ? `${entries[0].name}.zip` : 'arsiv.zip'
+    setPrompt({
+      title: 'Zip arşivi oluştur',
+      label: 'Arşiv adı',
+      initialValue: defaultName,
+      confirmLabel: 'Oluştur',
+      action: async (archiveName) => {
+        await api.createZip(parentDir, entries.map((item) => item.name), archiveName)
+        local.reload()
+      },
+    })
+  }
+
   const openEntry = (pane: PaneId, entry: FileEntry) => {
     if (entry.kind === 'folder') navigate(pane, entry.path)
     else setInspectedEntry(entry)
   }
 
-  const canUpload = Boolean(selectedLocalEntries.some((entry) => entry.kind === 'file') && isConnected && remote.path)
-  const canDownload = Boolean(selectedRemoteEntries.some((entry) => entry.kind === 'file') && local.path)
+  const canUpload = Boolean(selectedLocalEntries.length > 0 && isConnected && remote.path)
+  const canDownload = Boolean(selectedRemoteEntries.length > 0 && local.path)
   const canCreateFolder = Boolean(focusedPane === 'local' ? local.path : (isConnected && remote.path))
 
   const fileMenu = (pane: PaneId, entry: FileEntry, event: MouseEvent) => {
@@ -247,22 +282,29 @@ function App({ onReady }: { onReady?: () => void }) {
     const items: MenuItem[] = targets.length > 1
       ? [
         pane === 'local'
-          ? { label: `Yükle (${targets.filter((item) => item.kind === 'file').length})`, onSelect: () => enqueueMany(targets, 'upload'), disabled: !isConnected || !targets.some((item) => item.kind === 'file'), hint: 'Ctrl+U' }
-          : { label: `İndir (${targets.filter((item) => item.kind === 'file').length})`, onSelect: () => enqueueMany(targets, 'download'), disabled: !targets.some((item) => item.kind === 'file'), hint: 'Ctrl+D' },
+          ? { label: `Yükle (${targets.length})`, onSelect: () => enqueueSelected(targets, 'upload'), disabled: !isConnected, hint: 'Ctrl+U' }
+          : { label: `İndir (${targets.length})`, onSelect: () => enqueueSelected(targets, 'download'), hint: 'Ctrl+D' },
+        ...(pane === 'local' ? [{ label: `Zip arşivi oluştur (${targets.length})`, onSelect: () => askCreateZip(targets) }] : []),
         { label: `Sil (${targets.length})`, onSelect: () => askDelete(pane, targets), danger: true, hint: 'Del' },
       ]
       : entry.kind === 'folder'
         ? [
           { label: 'Aç', onSelect: () => navigate(pane, entry.path), hint: 'Enter' },
+          pane === 'local'
+            ? { label: 'Klasörü yükle', onSelect: () => enqueueSelected([entry], 'upload'), disabled: !isConnected }
+            : { label: 'Klasörü indir', onSelect: () => enqueueSelected([entry], 'download') },
+          ...(pane === 'local' ? [{ label: 'Zip arşivi oluştur', onSelect: () => askCreateZip([entry]) }] : []),
           { label: 'Yeni klasör', onSelect: () => askCreateFolder(pane), hint: 'Ctrl+Shift+N' },
           { label: 'Yeniden adlandır', onSelect: () => askRename(pane, entry), hint: 'F2' },
           { label: 'Sil', onSelect: () => askDelete(pane, [entry]), danger: true, hint: 'Del' },
         ]
         : [
           { label: 'Detaylar', onSelect: () => setInspectedEntry(entry), hint: 'Enter' },
+          ...(pane === 'remote' ? [{ label: 'Metin olarak düzenle', onSelect: () => setEditingRemote(entry) }] : []),
           pane === 'local'
             ? { label: 'Yükle', onSelect: () => enqueue(entry, 'upload'), disabled: !isConnected, hint: 'Ctrl+U' }
             : { label: 'İndir', onSelect: () => enqueue(entry, 'download'), hint: 'Ctrl+D' },
+          ...(pane === 'local' ? [{ label: 'Zip arşivi oluştur', onSelect: () => askCreateZip([entry]) }] : []),
           { label: 'Yeni klasör', onSelect: () => askCreateFolder(pane), hint: 'Ctrl+Shift+N' },
           { label: 'Yeniden adlandır', onSelect: () => askRename(pane, entry), hint: 'F2' },
           { label: 'Yolu kopyala', onSelect: () => { void navigator.clipboard?.writeText(entry.path) } },
@@ -335,12 +377,12 @@ function App({ onReady }: { onReady?: () => void }) {
       askDelete(focusedPane, focusedSelections)
     } else if (mod && key === 'u' && canUpload) {
       event.preventDefault()
-      enqueueMany(selectedLocalEntries, 'upload')
+      enqueueSelected(selectedLocalEntries, 'upload')
     } else if (mod && key === 'd' && canDownload) {
       event.preventDefault()
-      enqueueMany(selectedRemoteEntries, 'download')
+      enqueueSelected(selectedRemoteEntries, 'download')
     }
-  }, dialog.open || Boolean(confirm) || Boolean(prompt) || Boolean(menu))
+  }, dialog.open || Boolean(confirm) || Boolean(prompt) || Boolean(menu) || Boolean(remoteAccessModal) || settingsOpen || tunnelsOpen || Boolean(editingRemote))
 
   // ---------------------------------------------------------------- görünüm
   const localPane = { ...local, visibleEntries: visibleLocal, editSignal: editSignal.local }
@@ -364,7 +406,7 @@ function App({ onReady }: { onReady?: () => void }) {
 
   return (
     <div className="cg-window">
-      <TitleBar connection={isConnected ? activeConnection : null} theme={theme} onToggleTheme={toggleTheme} />
+      <TitleBar connection={isConnected ? activeConnection : null} theme={theme} onToggleTheme={toggleTheme} onOpenSettings={() => setSettingsOpen(true)} />
       <Toolbar
         focusedPane={focusedPane}
         canUpload={canUpload}
@@ -376,8 +418,8 @@ function App({ onReady }: { onReady?: () => void }) {
         query={query}
         bookmarksOpen={bookmarksOpen}
         onNewConnection={() => setDialog({ open: true })}
-        onUpload={() => enqueueMany(selectedLocalEntries, 'upload')}
-        onDownload={() => enqueueMany(selectedRemoteEntries, 'download')}
+        onUpload={() => enqueueSelected(selectedLocalEntries, 'upload')}
+        onDownload={() => enqueueSelected(selectedRemoteEntries, 'download')}
         onCreateFolder={() => askCreateFolder(focusedPane)}
         onRefresh={() => focusedDir.reload()}
         onDelete={() => askDelete(focusedPane, focusedSelections)}
@@ -407,6 +449,7 @@ function App({ onReady }: { onReady?: () => void }) {
           <FileManagerView
             local={localPane}
             remote={remotePane}
+            drives={drives}
             connection={activeConnection}
             connectionStatus={activeStatus}
             focusedPane={focusedPane}
@@ -459,6 +502,7 @@ function App({ onReady }: { onReady?: () => void }) {
           connection={directTerminal ? null : activeConnection}
           directTarget={directTerminal}
           theme={theme}
+          onOpenTunnels={() => setTunnelsOpen(true)}
           onClose={() => { setTerminalOpen(false); setDirectTerminal(null) }}
         />
       )}
@@ -495,6 +539,24 @@ function App({ onReady }: { onReady?: () => void }) {
             setTerminalOpen(true)
           }}
           onClose={() => setRemoteAccessModal(null)}
+        />
+      )}
+      {settingsOpen && (
+        <SettingsModal
+          theme={theme}
+          onToggleTheme={toggleTheme}
+          settings={settings}
+          onChange={setSettings}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+      {tunnelsOpen && <TunnelModal onClose={() => setTunnelsOpen(false)} />}
+      {editingRemote && (
+        <RemoteEditorModal
+          path={editingRemote.path}
+          name={editingRemote.name}
+          onSaved={remote.reload}
+          onClose={() => setEditingRemote(null)}
         />
       )}
       {confirm && <ConfirmDialog title={confirm.title} message={confirm.message} confirmLabel={confirm.confirmLabel} onConfirm={confirm.action} onClose={() => setConfirm(null)} />}

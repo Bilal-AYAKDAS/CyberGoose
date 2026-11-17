@@ -118,3 +118,7 @@
     --motion-medium: 0ms;
   }
 }
+
+:root[data-density='compact'] {
+  --size-row: 22px;
+}
