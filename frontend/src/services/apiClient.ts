@@ -136,6 +136,15 @@ export type TransferJobStatus = {
 }
 
 export type RemoteText = { path: string; content: string; encoding?: string; newline?: '\n' | '\r\n' }
+export type SheetTab = { name: string; rows: string[][] }
+export type SheetData = {
+  path: string
+  format: 'xlsx' | 'csv'
+  sheets: SheetTab[]
+  delimiter?: string
+  encoding?: string
+  newline?: '\n' | '\r\n'
+}
 export type LocalStat = { name: string; path: string; parent: string; kind: 'file' | 'folder'; size: number | null; modified: string | null }
 export type ProviderStatus = { dropbox: boolean; googledrive: boolean; onedrive: boolean }
 export type FolderPlan = { rootName: string; files: { relativeDir: string; name: string; size: number | null }[] }
@@ -162,6 +171,17 @@ export const api = {
   readRemoteText: (path: string) => post<RemoteText>('/api/remote/read', { path }),
   writeRemoteText: (path: string, content: string, options: { encoding?: string; newline?: string } = {}) =>
     post<{ path: string; size: number }>('/api/remote/write', { path, content, ...options }),
+  readLocalText: (path: string) => post<RemoteText>('/api/local/read', { path }),
+  writeLocalText: (path: string, content: string, options: { encoding?: string; newline?: string } = {}) =>
+    post<{ path: string; size: number }>('/api/local/write', { path, content, ...options }),
+  readSheet: (side: 'local' | 'remote', path: string) =>
+    post<SheetData>(`/api/${side}/sheet/read`, { path }),
+  writeSheet: (
+    side: 'local' | 'remote',
+    path: string,
+    sheets: SheetTab[],
+    options: { delimiter?: string; encoding?: string; newline?: string } = {},
+  ) => post<{ path: string; size: number }>(`/api/${side}/sheet/write`, { path, sheets, ...options }),
 
   startTransfer: (request: TransferRequest) => post<TransferJobStatus>('/api/transfers', request),
   getTransfer: (jobId: string) => apiRequest<TransferJobStatus>(`/api/transfers/${encodeURIComponent(jobId)}`),

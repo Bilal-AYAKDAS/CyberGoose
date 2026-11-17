@@ -30,6 +30,7 @@ import type { ConnectionProfile, FileEntry, FolderBookmark, PaneId } from './typ
 // terminal açılınca yüklenir).
 const TerminalDrawer = lazy(() => import('./components/TerminalDrawer').then((m) => ({ default: m.TerminalDrawer })))
 const RemoteEditorModal = lazy(() => import('./components/RemoteEditorModal').then((m) => ({ default: m.RemoteEditorModal })))
+const SheetEditorModal = lazy(() => import('./components/SheetEditorModal').then((m) => ({ default: m.SheetEditorModal })))
 const SettingsModal = lazy(() => import('./components/SettingsModal').then((m) => ({ default: m.SettingsModal })))
 const TunnelModal = lazy(() => import('./components/TunnelModal').then((m) => ({ default: m.TunnelModal })))
 const RemoteAccessModal = lazy(() => import('./components/RemoteAccessModal').then((m) => ({ default: m.RemoteAccessModal })))
@@ -299,7 +300,20 @@ function App({ onReady }: { onReady?: () => void }) {
         entry.kind === 'folder'
           ? { label: 'Aç', onSelect: () => navigate(pane, entry.path), hint: 'Enter' }
           : { label: 'Detaylar', onSelect: () => setOverlay({ inspected: entry }), hint: 'Enter' },
-        ...(pane === 'remote' && entry.kind === 'file' ? [{ label: 'Metin olarak düzenle', onSelect: () => setOverlay({ editing: entry }) }] : []),
+        ...(() => {
+          if (entry.kind !== 'file') return []
+          const lower = entry.name.toLowerCase()
+          const isXlsx = lower.endsWith('.xlsx')
+          const isCsv = lower.endsWith('.csv')
+          const editItems: MenuItem[] = []
+          if (isXlsx || isCsv) {
+            editItems.push({ label: 'Tablo olarak düzenle', onSelect: () => setOverlay({ editing: { entry, side: pane, mode: 'sheet' } }) })
+          }
+          if (!isXlsx) {
+            editItems.push({ label: 'Metin olarak düzenle', onSelect: () => setOverlay({ editing: { entry, side: pane, mode: 'text' } }) })
+          }
+          return editItems
+        })(),
         transferItem,
         ...zipItem,
         { label: 'Yeniden adlandır', onSelect: () => askRename(pane, entry), hint: 'F2' },
@@ -599,12 +613,23 @@ function App({ onReady }: { onReady?: () => void }) {
         )}
         {overlays.tunnels && <TunnelModal onClose={() => setOverlay({ tunnels: false })} />}
         {overlays.editing && (
-          <RemoteEditorModal
-            path={overlays.editing.path}
-            name={overlays.editing.name}
-            onSaved={remote.reload}
-            onClose={() => setOverlay({ editing: null })}
-          />
+          overlays.editing.mode === 'sheet' ? (
+            <SheetEditorModal
+              side={overlays.editing.side}
+              path={overlays.editing.entry.path}
+              name={overlays.editing.entry.name}
+              onSaved={overlays.editing.side === 'local' ? local.reload : remote.reload}
+              onClose={() => setOverlay({ editing: null })}
+            />
+          ) : (
+            <RemoteEditorModal
+              side={overlays.editing.side}
+              path={overlays.editing.entry.path}
+              name={overlays.editing.entry.name}
+              onSaved={overlays.editing.side === 'local' ? local.reload : remote.reload}
+              onClose={() => setOverlay({ editing: null })}
+            />
+          )
         )}
       </Suspense>
       </ChunkBoundary>

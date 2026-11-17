@@ -4,6 +4,7 @@ import { Modal } from './Modal'
 import { Notice } from './Notice'
 
 type RemoteEditorModalProps = {
+  side?: 'local' | 'remote'
   path: string
   name: string
   onSaved: () => void
@@ -17,10 +18,10 @@ const ENCODING_LABEL: Record<string, string> = {
 }
 
 /**
- * Uzak metin dosyası düzenleyici (256 KB'a kadar). Dosyanın karakter kodlaması ve satır sonu
+ * Yerel ve uzak metin dosyası düzenleyici (256 KB'a kadar). Dosyanın karakter kodlaması ve satır sonu
  * (CRLF/LF) korunur: textarea her şeyi LF'ye çevirir, kaydederken backend özgün biçime döner.
  */
-export function RemoteEditorModal({ path, name, onSaved, onClose }: RemoteEditorModalProps) {
+export function RemoteEditorModal({ side = 'remote', path, name, onSaved, onClose }: RemoteEditorModalProps) {
   const [file, setFile] = useState<RemoteText | null>(null)
   const [content, setContent] = useState('')
   const [loading, setLoading] = useState(true)
@@ -31,7 +32,8 @@ export function RemoteEditorModal({ path, name, onSaved, onClose }: RemoteEditor
 
   useEffect(() => {
     let active = true
-    api.readRemoteText(path)
+    const read = side === 'local' ? api.readLocalText(path) : api.readRemoteText(path)
+    read
       .then((res) => {
         if (!active) return
         setFile(res)
@@ -44,13 +46,18 @@ export function RemoteEditorModal({ path, name, onSaved, onClose }: RemoteEditor
         setLoading(false)
       })
     return () => { active = false }
-  }, [path])
+  }, [path, side])
 
   const save = async () => {
     setSaving(true)
     setError(null)
     try {
-      await api.writeRemoteText(path, content, { encoding: file?.encoding, newline: file?.newline })
+      const options = { encoding: file?.encoding, newline: file?.newline }
+      if (side === 'local') {
+        await api.writeLocalText(path, content, options)
+      } else {
+        await api.writeRemoteText(path, content, options)
+      }
       onSaved()
       onClose()
     } catch (caught) {
@@ -79,7 +86,7 @@ export function RemoteEditorModal({ path, name, onSaved, onClose }: RemoteEditor
         )}
         <button className="cg-btn cg-btn-ghost" onClick={close}>Vazgeç</button>
         <button className="cg-btn cg-btn-primary" disabled={loading || saving || !file} onClick={save}>
-          {saving ? 'Kaydediliyor' : 'Uzak sunucuya kaydet'}
+          {saving ? 'Kaydediliyor' : side === 'local' ? 'Kaydet' : 'Uzak sunucuya kaydet'}
         </button>
       </>}
     >

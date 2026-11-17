@@ -1,7 +1,7 @@
 import { useCallback, useReducer, type ReactNode } from 'react'
 import type { MenuItem } from '../components/ContextMenu'
 import type { DirectTerminalTarget, RemoteAccessMode } from '../components/RemoteAccessModal'
-import type { ConnectionProfile, FileEntry } from '../types'
+import type { ConnectionProfile, FileEntry, PaneId } from '../types'
 
 export type ConfirmState = {
   title: string
@@ -30,7 +30,7 @@ export type OverlayState = {
   prompt: PromptState | null
   menu: { x: number; y: number; items: MenuItem[] } | null
   inspected: FileEntry | null
-  editing: FileEntry | null
+  editing: { entry: FileEntry; side: PaneId; mode: 'text' | 'sheet' } | null
   remoteAccess: RemoteAccessMode | null
   settings: boolean
   tunnels: boolean

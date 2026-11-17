@@ -224,6 +224,53 @@ def local_info():
         return error("Bu dosyayı okuma izniniz yok", 403)
 
 
+def _text_write_args(data):
+    filepath, content = data.get("path"), data.get("content")
+    if not filepath or not isinstance(content, str):
+        raise files.FileServiceError("Dosya yolu ve içerik gerekli", 400)
+    encoding = str(data.get("encoding") or "utf-8")
+    newline = "\r\n" if data.get("newline") == "\r\n" else "\n"
+    return filepath, content, encoding, newline
+
+
+def _sheet_write_args(data):
+    filepath, sheets = data.get("path"), data.get("sheets")
+    if not filepath or not isinstance(sheets, list):
+        raise files.FileServiceError("Dosya yolu ve sayfa verisi gerekli", 400)
+    delimiter = str(data.get("delimiter") or ",")
+    encoding = str(data.get("encoding") or "utf-8")
+    newline = "\r\n" if data.get("newline") == "\r\n" else "\n"
+    return filepath, sheets, delimiter, encoding, newline
+
+
+@app.post("/api/local/read")
+def local_read():
+    filepath = body().get("path")
+    if not filepath:
+        return error("Dosya yolu gerekli", 400)
+    return jsonify(files.read_local_text(filepath))
+
+
+@app.post("/api/local/write")
+def local_write():
+    filepath, content, encoding, newline = _text_write_args(body())
+    return jsonify(files.write_local_text(filepath, content, encoding, newline))
+
+
+@app.post("/api/local/sheet/read")
+def local_sheet_read():
+    filepath = body().get("path")
+    if not filepath:
+        return error("Dosya yolu gerekli", 400)
+    return jsonify(files.read_local_sheet(filepath))
+
+
+@app.post("/api/local/sheet/write")
+def local_sheet_write():
+    filepath, sheets, delimiter, encoding, newline = _sheet_write_args(body())
+    return jsonify(files.write_local_sheet(filepath, sheets, delimiter, encoding, newline))
+
+
 # ---------------------------------------------------------------- uzak dosyalar
 
 @app.post("/api/remote/list")
@@ -257,14 +304,25 @@ def remote_read():
 
 @app.post("/api/remote/write")
 def remote_write():
-    data = body()
-    filepath, content = data.get("path"), data.get("content")
-    if not filepath or not isinstance(content, str):
-        return error("Dosya yolu ve içerik gerekli", 400)
-    encoding = str(data.get("encoding") or "utf-8")
-    newline = "\r\n" if data.get("newline") == "\r\n" else "\n"
+    filepath, content, encoding, newline = _text_write_args(body())
     with sessions.lock:
         return jsonify(files.write_remote_text(sessions.state.connection, filepath, content, encoding, newline))
+
+
+@app.post("/api/remote/sheet/read")
+def remote_sheet_read():
+    filepath = body().get("path")
+    if not filepath:
+        return error("Dosya yolu gerekli", 400)
+    with sessions.lock:
+        return jsonify(files.read_remote_sheet(sessions.state.connection, filepath))
+
+
+@app.post("/api/remote/sheet/write")
+def remote_sheet_write():
+    filepath, sheets, delimiter, encoding, newline = _sheet_write_args(body())
+    with sessions.lock:
+        return jsonify(files.write_remote_sheet(sessions.state.connection, filepath, sheets, delimiter, encoding, newline))
 
 
 # ---------------------------------------------------------------- aktarım ve dosya işlemleri

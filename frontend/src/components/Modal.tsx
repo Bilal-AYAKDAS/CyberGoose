@@ -3,16 +3,17 @@ import { useEffect, useId, useRef, type PropsWithChildren, type ReactNode } from
 type ModalProps = PropsWithChildren<{
   title: string
   footer?: ReactNode
+  wide?: boolean
   onClose: () => void
   /** Enter tuşu (input içindeyken) birincil eylemi tetikler. */
   onSubmit?: () => void
 }>
 
 /**
- * Diyalog kabuğu: bg-overlay, radius-lg, shadow-overlay, 440px.
+ * Diyalog kabuğu: bg-overlay, radius-lg, shadow-overlay, 440px (wide=true iken geniş).
  * Esc = Vazgeç, Enter = birincil eylem; açılınca ilk alan odak alır.
  */
-export function Modal({ title, footer, onClose, onSubmit, children }: ModalProps) {
+export function Modal({ title, footer, wide, onClose, onSubmit, children }: ModalProps) {
   const titleId = useId()
   const dialogRef = useRef<HTMLElement>(null)
 
@@ -34,7 +35,7 @@ export function Modal({ title, footer, onClose, onSubmit, children }: ModalProps
     }}>
       <section
         ref={dialogRef}
-        className="cg-dialog"
+        className={`cg-dialog${wide ? ' cg-dialog-wide' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

@@ -602,3 +602,71 @@ def test_disconnect_cleans_up_tunnels_and_session_terminals(client, monkeypatch)
     assert client.post("/api/disconnect", json={}).status_code == 200
     assert "terminal" in closed and "conn" in closed
     assert client.get("/api/tunnels").get_json() == []
+
+
+def test_local_read_and_write_text(client, tmp_path):
+    target = tmp_path / "notlar.txt"
+    target.write_bytes("Birinci satır\r\nİkinci satır\r\n".encode("cp1254"))
+
+    res = client.post("/api/local/read", json={"path": str(target)})
+    assert res.status_code == 200
+    payload = res.get_json()
+    assert payload["encoding"] == "cp1254"
+    assert payload["newline"] == "\r\n"
+    assert payload["content"] == "Birinci satır\nİkinci satır\n"
+
+    save = client.post("/api/local/write", json={
+        "path": str(target),
+        "content": "Yeni şğü\n",
+        "encoding": "cp1254",
+        "newline": "\r\n",
+    })
+    assert save.status_code == 200
+    assert target.read_bytes() == "Yeni şğü\r\n".encode("cp1254")
+
+
+def test_local_read_and_write_csv_and_xlsx(client, tmp_path):
+    import openpyxl
+
+    csv_file = tmp_path / "tablo.csv"
+    csv_file.write_text("ad;deger\r\nelma;10\r\n", encoding="utf-8")
+
+    csv_read = client.post("/api/local/sheet/read", json={"path": str(csv_file)})
+    assert csv_read.status_code == 200
+    csv_data = csv_read.get_json()
+    assert csv_data["format"] == "csv"
+    assert csv_data["delimiter"] == ";"
+    assert csv_data["sheets"][0]["rows"] == [["ad", "deger"], ["elma", "10"]]
+
+    csv_write = client.post("/api/local/sheet/write", json={
+        "path": str(csv_file),
+        "sheets": [{"name": "tablo.csv", "rows": [["ad", "deger"], ["armut", "20"]]}],
+        "delimiter": ";",
+        "encoding": "utf-8",
+        "newline": "\r\n",
+    })
+    assert csv_write.status_code == 200
+    assert csv_file.read_bytes() == b"ad;deger\r\narmut;20\r\n"
+
+    xlsx_file = tmp_path / "rapor.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Gelir"
+    ws.append(["Ay", "Tutar"])
+    ws.append(["Ocak", 100])
+    wb.save(xlsx_file)
+
+    xlsx_read = client.post("/api/local/sheet/read", json={"path": str(xlsx_file)})
+    assert xlsx_read.status_code == 200
+    xlsx_data = xlsx_read.get_json()
+    assert xlsx_data["format"] == "xlsx"
+    assert xlsx_data["sheets"] == [{"name": "Gelir", "rows": [["Ay", "Tutar"], ["Ocak", "100"]]}]
+
+    xlsx_write = client.post("/api/local/sheet/write", json={
+        "path": str(xlsx_file),
+        "sheets": [{"name": "Gelir", "rows": [["Ay", "Tutar"], ["Subat", "250"]]}],
+    })
+    assert xlsx_write.status_code == 200
+    wb2 = openpyxl.load_workbook(xlsx_file)
+    assert wb2["Gelir"]["A2"].value == "Subat"
+    assert wb2["Gelir"]["B2"].value == "250"

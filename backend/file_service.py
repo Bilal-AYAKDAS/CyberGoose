@@ -12,6 +12,7 @@ Sağlayıcı tipi, ağır SDK'ları içe aktarmamak için nesnenin öznitelikler
 """
 from __future__ import annotations
 
+import csv
 import ftplib
 import io
 import logging
@@ -1096,6 +1097,142 @@ def _decode_text(raw: bytes) -> tuple[str, str]:
 
 
 EDITOR_ENCODINGS = {'utf-8', 'utf-8-sig', 'cp1254'}
+MAX_SHEET_BYTES = 5 * 1024 * 1024
+MAX_SHEET_ROWS = 5000
+MAX_SHEET_COLS = 100
+
+
+def _text_response(path: str, raw: bytes, max_bytes: int) -> dict:
+    if len(raw) > max_bytes:
+        raise FileServiceError('Dosya düzenleme sınırı (256 KB) aşıldı', 400, 'too_large')
+    content, encoding = _decode_text(raw)
+    newline = '\r\n' if '\r\n' in content else '\n'
+    return {"path": path, "content": content.replace('\r\n', '\n'), "encoding": encoding, "newline": newline}
+
+
+def _encode_text(content: str, encoding: str, newline: str, max_bytes: int, limit_label: str = '256 KB') -> bytes:
+    if encoding not in EDITOR_ENCODINGS:
+        raise FileServiceError('Desteklenmeyen karakter kodlaması', 400)
+    text = content.replace('\r\n', '\n')
+    if newline == '\r\n':
+        text = text.replace('\n', '\r\n')
+    try:
+        data = text.encode(encoding, errors='surrogateescape' if encoding == 'cp1254' else 'strict')
+    except UnicodeEncodeError:
+        raise FileServiceError(f'Metin {encoding} kodlamasıyla kaydedilemiyor (desteklenmeyen karakter var).', 400, 'encoding_error')
+    if len(data) > max_bytes:
+        raise FileServiceError(f'Dosya düzenleme sınırı ({limit_label}) aşıldı', 400, 'too_large')
+    return data
+
+
+def _read_remote_bytes(conn, path: str, max_bytes: int, limit_label: str = '256 KB') -> tuple[str, bytes]:
+    """Uzak dosyayı bellek içine okur; boyut sınırı aşılırsa indirmeyi durdurur."""
+    provider = provider_of(conn)
+    remote_file = normalize_remote(path)
+    size = _remote_size(provider, conn, remote_file)
+    if size is not None and size > max_bytes:
+        raise FileServiceError(f'Dosya düzenleme sınırı ({limit_label}) aşıldı', 400, 'too_large')
+    buf = io.BytesIO()
+    try:
+        if provider == 'sftp':
+            with conn.sftp.open(remote_file, 'rb') as handle:
+                while buf.tell() <= max_bytes:
+                    chunk = handle.read(TRANSFER_CHUNK)
+                    if not chunk:
+                        break
+                    buf.write(chunk)
+        elif provider == 'ftp':
+            conn.ftp.retrbinary(f'RETR {remote_file}', buf.write)
+        elif provider == 'dropbox':
+            _md, resp = conn.dbx.files_download(remote_file)
+            buf.write(resp.content[:max_bytes + 1])
+        elif provider == 'onedrive':
+            with conn.session.get(_onedrive_url(remote_file, '/content'), stream=True, timeout=30) as resp:
+                if not resp.ok:
+                    _onedrive_check(resp)
+                for chunk in resp.iter_content(chunk_size=TRANSFER_CHUNK):
+                    buf.write(chunk)
+                    if buf.tell() > max_bytes:
+                        break
+        else:
+            service = conn.service
+            found = _drive_find_file(service, _drive_resolve_folder(service, posixpath.dirname(remote_file)), posixpath.basename(remote_file))
+            if not found:
+                raise FileServiceError('Uzak dosya bulunamadı', 404)
+            if str(found.get('mimeType') or '').startswith(DRIVE_WORKSPACE_PREFIX):
+                raise FileServiceError('Google Workspace dosyaları doğrudan düzenlenemez.', 400, 'google_workspace_file')
+            from googleapiclient.http import MediaIoBaseDownload
+            downloader = MediaIoBaseDownload(buf, service.files().get_media(fileId=found['id']))
+            done = False
+            while not done and buf.tell() <= max_bytes:
+                _, done = downloader.next_chunk()
+    except FileServiceError:
+        raise
+    except Exception as error:
+        _raise_provider_error('Dosya okunamadı', error)
+    raw = buf.getvalue()
+    if len(raw) > max_bytes:
+        raise FileServiceError(f'Dosya düzenleme sınırı ({limit_label}) aşıldı', 400, 'too_large')
+    return remote_file, raw
+
+
+def _write_remote_bytes(conn, path: str, data: bytes, mime_type: str = 'text/plain') -> str:
+    """Uzak dosyayı sağlayıcıya güvenli biçimde yazar."""
+    provider = provider_of(conn)
+    remote_file = normalize_remote(path)
+    try:
+        if provider == 'sftp':
+            _write_sftp_atomic(conn, remote_file, data)
+        elif provider == 'ftp':
+            _write_ftp_atomic(conn, remote_file, data)
+        elif provider == 'dropbox':
+            import dropbox
+            conn.dbx.files_upload(data, remote_file, mode=dropbox.files.WriteMode.overwrite)
+        elif provider == 'onedrive':
+            _onedrive_check(conn.session.put(_onedrive_url(remote_file, '/content'), data=data, timeout=30))
+        else:
+            service = conn.service
+            parent_id = _drive_resolve_folder(service, posixpath.dirname(remote_file))
+            name = posixpath.basename(remote_file)
+            found = _drive_find_file(service, parent_id, name)
+            from googleapiclient.http import MediaIoBaseUpload
+            media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mime_type, resumable=False)
+            if found:
+                service.files().update(fileId=found['id'], media_body=media).execute()
+            else:
+                service.files().create(body={'name': name, 'parents': [parent_id]}, media_body=media, fields='id').execute()
+    except FileServiceError:
+        raise
+    except Exception as error:
+        _raise_provider_error('Dosya kaydedilemedi', error)
+    return remote_file
+
+
+def read_local_text(path: str) -> dict:
+    """Yerel metin dosyasını düzenleyici için okur (256 KB'a kadar)."""
+    target = Path(path)
+    if not target.exists() or not target.is_file():
+        raise FileServiceError('Yerel dosya bulunamadı', 404)
+    if target.stat().st_size > MAX_REMOTE_EDIT_BYTES:
+        raise FileServiceError('Dosya düzenleme sınırı (256 KB) aşıldı', 400, 'too_large')
+    try:
+        raw = target.read_bytes()
+    except PermissionError:
+        raise FileServiceError('Dosya okuma izniniz yok', 403)
+    return _text_response(str(target), raw, MAX_REMOTE_EDIT_BYTES)
+
+
+def write_local_text(path: str, content: str, encoding: str = 'utf-8', newline: str = '\n') -> dict:
+    """Yerel metin dosyasını kodlama ve satır sonunu koruyarak kaydeder."""
+    target = Path(path)
+    if not target.parent.exists():
+        raise FileServiceError('Hedef klasör bulunamadı', 404)
+    data = _encode_text(content, encoding, newline, MAX_REMOTE_EDIT_BYTES)
+    try:
+        target.write_bytes(data)
+    except PermissionError:
+        raise FileServiceError('Dosya yazma izniniz yok', 403)
+    return {"path": str(target), "size": len(data)}
 
 
 def read_remote_text(conn, path: str) -> dict:
@@ -1104,51 +1241,8 @@ def read_remote_text(conn, path: str) -> dict:
     Dönen `newline` dosyadaki satır sonudur: tarayıcı textarea'sı her şeyi `\\n`'e çevirdiği için
     kaydederken aynı satır sonuna geri dönülür.
     """
-    provider = provider_of(conn)
-    remote_file = normalize_remote(path)
-    size = _remote_size(provider, conn, remote_file)
-    if size is not None and size > MAX_REMOTE_EDIT_BYTES:
-        raise FileServiceError('Dosya düzenleme sınırı (256 KB) aşıldı', 400, 'too_large')
-    buf = io.BytesIO()
-    try:
-        if provider == 'sftp':
-            with conn.sftp.open(remote_file, 'rb') as handle:
-                buf.write(handle.read(MAX_REMOTE_EDIT_BYTES + 1))
-        elif provider == 'ftp':
-            conn.ftp.retrbinary(f'RETR {remote_file}', buf.write)
-        elif provider == 'dropbox':
-            _md, resp = conn.dbx.files_download(remote_file)
-            buf.write(resp.content[:MAX_REMOTE_EDIT_BYTES + 1])
-        elif provider == 'onedrive':
-            with conn.session.get(_onedrive_url(remote_file, '/content'), stream=True, timeout=30) as resp:
-                if not resp.ok:
-                    _onedrive_check(resp)
-                for chunk in resp.iter_content(chunk_size=TRANSFER_CHUNK):
-                    buf.write(chunk)
-                    if buf.tell() > MAX_REMOTE_EDIT_BYTES:
-                        break
-        else:
-            service = conn.service
-            found = _drive_find_file(service, _drive_resolve_folder(service, posixpath.dirname(remote_file)), posixpath.basename(remote_file))
-            if not found:
-                raise FileServiceError('Uzak dosya bulunamadı', 404)
-            if str(found.get('mimeType') or '').startswith(DRIVE_WORKSPACE_PREFIX):
-                raise FileServiceError('Google Workspace dosyaları metin olarak düzenlenemez.', 400, 'google_workspace_file')
-            from googleapiclient.http import MediaIoBaseDownload
-            downloader = MediaIoBaseDownload(buf, service.files().get_media(fileId=found['id']))
-            done = False
-            while not done and buf.tell() <= MAX_REMOTE_EDIT_BYTES:
-                _, done = downloader.next_chunk()
-    except FileServiceError:
-        raise
-    except Exception as error:
-        _raise_provider_error('Dosya okunamadı', error)
-    raw = buf.getvalue()
-    if len(raw) > MAX_REMOTE_EDIT_BYTES:
-        raise FileServiceError('Dosya düzenleme sınırı (256 KB) aşıldı', 400, 'too_large')
-    content, encoding = _decode_text(raw)
-    newline = '\r\n' if '\r\n' in content else '\n'
-    return {"path": remote_file, "content": content.replace('\r\n', '\n'), "encoding": encoding, "newline": newline}
+    remote_file, raw = _read_remote_bytes(conn, path, MAX_REMOTE_EDIT_BYTES)
+    return _text_response(remote_file, raw, MAX_REMOTE_EDIT_BYTES)
 
 
 def _temp_name(remote_file: str) -> str:
@@ -1252,44 +1346,181 @@ def _quiet(action) -> None:
 
 
 def write_remote_text(conn, path: str, content: str, encoding: str = 'utf-8', newline: str = '\n') -> dict:
-    provider = provider_of(conn)
-    remote_file = normalize_remote(path)
-    if encoding not in EDITOR_ENCODINGS:
-        raise FileServiceError('Desteklenmeyen karakter kodlaması', 400)
-    text = content.replace('\r\n', '\n')
-    if newline == '\r\n':
-        text = text.replace('\n', '\r\n')
+    data = _encode_text(content, encoding, newline, MAX_REMOTE_EDIT_BYTES)
+    remote_file = _write_remote_bytes(conn, path, data, mime_type='text/plain')
+    return {"path": remote_file, "size": len(data)}
+
+
+def _detect_sheet_format(path: str) -> str:
+    ext = Path(path).suffix.lower()
+    if ext == '.xlsx':
+        return 'xlsx'
+    if ext == '.csv':
+        return 'csv'
+    raise FileServiceError('Desteklenmeyen tablo biçimi (.xlsx veya .csv gerekli)', 400, 'unsupported_format')
+
+
+def _detect_csv_delimiter(sample: str) -> str:
     try:
-        data = text.encode(encoding, errors='surrogateescape' if encoding == 'cp1254' else 'strict')
-    except UnicodeEncodeError:
-        raise FileServiceError(f'Metin {encoding} kodlamasıyla kaydedilemiyor (desteklenmeyen karakter var).', 400, 'encoding_error')
-    if len(data) > MAX_REMOTE_EDIT_BYTES:
-        raise FileServiceError('Dosya düzenleme sınırı (256 KB) aşıldı', 400, 'too_large')
+        dialect = csv.Sniffer().sniff(sample[:4096], delimiters=',;\t|')
+        return dialect.delimiter
+    except csv.Error:
+        return ';' if sample.count(';') > sample.count(',') else ','
+
+
+def _parse_sheet_bytes(path: str, raw: bytes) -> dict:
+    fmt = _detect_sheet_format(path)
+    if fmt == 'csv':
+        content, encoding = _decode_text(raw)
+        newline = '\r\n' if '\r\n' in content else '\n'
+        text = content.replace('\r\n', '\n')
+        delimiter = _detect_csv_delimiter(text)
+        rows = [row[:MAX_SHEET_COLS] for row in list(csv.reader(io.StringIO(text), delimiter=delimiter))[:MAX_SHEET_ROWS]]
+        if not rows:
+            rows = [['']]
+        return {
+            "path": path,
+            "format": "csv",
+            "sheets": [{"name": Path(path).name or 'CSV', "rows": rows}],
+            "delimiter": delimiter,
+            "encoding": encoding,
+            "newline": newline,
+        }
+    import openpyxl
     try:
-        if provider == 'sftp':
-            _write_sftp_atomic(conn, remote_file, data)
-        elif provider == 'ftp':
-            _write_ftp_atomic(conn, remote_file, data)
-        elif provider == 'dropbox':
-            import dropbox
-            conn.dbx.files_upload(data, remote_file, mode=dropbox.files.WriteMode.overwrite)
-        elif provider == 'onedrive':
-            _onedrive_check(conn.session.put(_onedrive_url(remote_file, '/content'), data=data, timeout=30))
-        else:
-            service = conn.service
-            parent_id = _drive_resolve_folder(service, posixpath.dirname(remote_file))
-            name = posixpath.basename(remote_file)
-            found = _drive_find_file(service, parent_id, name)
-            from googleapiclient.http import MediaIoBaseUpload
-            media = MediaIoBaseUpload(io.BytesIO(data), mimetype='text/plain', resumable=False)
-            if found:
-                service.files().update(fileId=found['id'], media_body=media).execute()
-            else:
-                service.files().create(body={'name': name, 'parents': [parent_id]}, media_body=media, fields='id').execute()
-    except FileServiceError:
-        raise
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=False)
     except Exception as error:
-        _raise_provider_error('Dosya kaydedilemedi', error)
+        raise FileServiceError(f'Excel dosyası okunamadı: {error}', 400, 'invalid_xlsx')
+    sheets = []
+    for ws in wb.worksheets:
+        rows = []
+        row_limit = min(ws.max_row or 1, MAX_SHEET_ROWS)
+        col_limit = min(ws.max_column or 1, MAX_SHEET_COLS)
+        for row in ws.iter_rows(max_row=row_limit, max_col=col_limit, values_only=True):
+            rows.append(['' if cell is None else str(cell) for cell in row])
+        if not rows:
+            rows = [['']]
+        sheets.append({"name": ws.title, "rows": rows})
+    return {"path": path, "format": "xlsx", "sheets": sheets}
+
+
+def _serialize_sheet_bytes(
+    path: str,
+    sheets: list[dict],
+    existing_raw: bytes | None = None,
+    delimiter: str = ',',
+    encoding: str = 'utf-8',
+    newline: str = '\n',
+) -> tuple[bytes, str]:
+    fmt = _detect_sheet_format(path)
+    if not sheets:
+        raise FileServiceError('En az bir sayfa gerekli', 400)
+    if fmt == 'csv':
+        buf = io.StringIO()
+        writer = csv.writer(buf, delimiter=delimiter or ',', lineterminator='\n')
+        for row in sheets[0].get('rows') or []:
+            writer.writerow(['' if cell is None else str(cell) for cell in row])
+        data = _encode_text(buf.getvalue(), encoding, newline, MAX_SHEET_BYTES, '5 MB')
+        return data, 'text/csv'
+    import openpyxl
+    if existing_raw:
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(existing_raw))
+        except Exception:
+            wb = openpyxl.Workbook()
+    else:
+        wb = openpyxl.Workbook()
+    existing_names = list(wb.sheetnames)
+    kept_names = []
+    for index, sheet in enumerate(sheets):
+        title = str(sheet.get('name') or f'Sayfa{index + 1}')[:31]
+        if title in wb.sheetnames:
+            ws = wb[title]
+        elif index < len(existing_names) and existing_names[index] not in kept_names:
+            ws = wb[existing_names[index]]
+            ws.title = title
+        else:
+            ws = wb.create_sheet(title=title)
+        kept_names.append(ws.title)
+        rows = sheet.get('rows') or []
+        max_existing_rows = ws.max_row
+        max_existing_cols = ws.max_column
+        for r_idx in range(1, max_existing_rows + 1):
+            for c_idx in range(1, max_existing_cols + 1):
+                ws.cell(row=r_idx, column=c_idx, value=None)
+        for r_idx, row in enumerate(rows[:MAX_SHEET_ROWS], start=1):
+            for c_idx, val in enumerate(row[:MAX_SHEET_COLS], start=1):
+                ws.cell(row=r_idx, column=c_idx, value=None if val in (None, '') else str(val))
+    for name in list(wb.sheetnames):
+        if name not in kept_names and len(wb.sheetnames) > 1:
+            del wb[name]
+    out = io.BytesIO()
+    wb.save(out)
+    data = out.getvalue()
+    if len(data) > MAX_SHEET_BYTES:
+        raise FileServiceError('Dosya düzenleme sınırı (5 MB) aşıldı', 400, 'too_large')
+    return data, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+
+def read_local_sheet(path: str) -> dict:
+    """Yerel .xlsx veya .csv dosyasını tablo editörü için okur (5 MB'a kadar)."""
+    target = Path(path)
+    if not target.exists() or not target.is_file():
+        raise FileServiceError('Yerel dosya bulunamadı', 404)
+    if target.stat().st_size > MAX_SHEET_BYTES:
+        raise FileServiceError('Dosya düzenleme sınırı (5 MB) aşıldı', 400, 'too_large')
+    try:
+        raw = target.read_bytes()
+    except PermissionError:
+        raise FileServiceError('Dosya okuma izniniz yok', 403)
+    return _parse_sheet_bytes(str(target), raw)
+
+
+def write_local_sheet(
+    path: str,
+    sheets: list[dict],
+    delimiter: str = ',',
+    encoding: str = 'utf-8',
+    newline: str = '\n',
+) -> dict:
+    """Yerel .xlsx veya .csv dosyasını kaydeder."""
+    target = Path(path)
+    if not target.parent.exists():
+        raise FileServiceError('Hedef klasör bulunamadı', 404)
+    existing_raw = target.read_bytes() if target.exists() and _detect_sheet_format(path) == 'xlsx' else None
+    data, _mime = _serialize_sheet_bytes(path, sheets, existing_raw, delimiter, encoding, newline)
+    try:
+        target.write_bytes(data)
+    except PermissionError:
+        raise FileServiceError('Dosya yazma izniniz yok', 403)
+    return {"path": str(target), "size": len(data)}
+
+
+def read_remote_sheet(conn, path: str) -> dict:
+    """Uzak .xlsx veya .csv dosyasını tablo editörü için okur (5 MB'a kadar)."""
+    remote_file, raw = _read_remote_bytes(conn, path, MAX_SHEET_BYTES, '5 MB')
+    return _parse_sheet_bytes(remote_file, raw)
+
+
+def write_remote_sheet(
+    conn,
+    path: str,
+    sheets: list[dict],
+    delimiter: str = ',',
+    encoding: str = 'utf-8',
+    newline: str = '\n',
+) -> dict:
+    """Uzak .xlsx veya .csv dosyasını kaydeder."""
+    fmt = _detect_sheet_format(path)
+    existing_raw = None
+    if fmt == 'xlsx':
+        try:
+            _, existing_raw = _read_remote_bytes(conn, path, MAX_SHEET_BYTES, '5 MB')
+        except FileServiceError as err:
+            if err.status != 404:
+                raise
+    data, mime = _serialize_sheet_bytes(path, sheets, existing_raw, delimiter, encoding, newline)
+    remote_file = _write_remote_bytes(conn, path, data, mime_type=mime)
     return {"path": remote_file, "size": len(data)}
 
 

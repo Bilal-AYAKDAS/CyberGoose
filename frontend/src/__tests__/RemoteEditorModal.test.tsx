@@ -29,4 +29,23 @@ describe('RemoteEditorModal', () => {
     expect(onSaved).toHaveBeenCalled()
     expect(onClose).toHaveBeenCalled()
   })
+
+  it('loads local text and saves changes', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(api, 'readLocalText').mockResolvedValue({ path: 'C:/not.txt', content: 'merhaba', encoding: 'utf-8', newline: '\n' })
+    const writeSpy = vi.spyOn(api, 'writeLocalText').mockResolvedValue({ path: 'C:/not.txt', size: 12 })
+    const onSaved = vi.fn()
+    const onClose = vi.fn()
+
+    render(<RemoteEditorModal side="local" path="C:/not.txt" name="not.txt" onSaved={onSaved} onClose={onClose} />)
+    const box = await screen.findByLabelText('Dosya içeriği')
+    expect(box).toHaveValue('merhaba')
+    await user.clear(box)
+    await user.type(box, 'güncellendi')
+    await user.click(screen.getByRole('button', { name: 'Kaydet' }))
+
+    expect(writeSpy).toHaveBeenCalledWith('C:/not.txt', 'güncellendi', { encoding: 'utf-8', newline: '\n' })
+    expect(onSaved).toHaveBeenCalled()
+    expect(onClose).toHaveBeenCalled()
+  })
 })
