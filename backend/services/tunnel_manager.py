@@ -75,14 +75,22 @@ class TunnelManager:
                 raise files.FileServiceError("SSH transport etkin değil.", 409, "sftp_required")
 
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            # Windows'ta SO_REUSEADDR başka bir programın dinlediği portu da paylaştırır; tünel
+            # sessizce o programla yarışırdı. Özel kullanım, dolu portta açık bir hata verir.
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             srv.bind(("127.0.0.1", local_port))
             srv.listen(16)
             srv.settimeout(0.5)
         except OSError as exc:
             srv.close()
-            raise files.FileServiceError(f"Yerel port {local_port} açılamadı: {exc}", 400, "port_in_use") from exc
+            raise files.FileServiceError(
+                f"Yerel port {local_port} açılamadı; başka bir program kullanıyor olabilir ({exc.strerror or exc}).",
+                409, "port_in_use",
+            ) from exc
 
         actual_port = srv.getsockname()[1]
         entry = TunnelEntry(

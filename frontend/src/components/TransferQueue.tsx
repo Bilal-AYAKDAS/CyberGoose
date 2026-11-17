@@ -1,5 +1,5 @@
-import type { TransferItem } from '../types'
-import { durationText, formatFileSize, formatRate } from '../utils/formatters'
+import type { ConflictPolicy, TransferItem } from '../types'
+import { durationText, etaText, formatFileSize, formatRate } from '../utils/formatters'
 import { queueSummary } from '../utils/status'
 import { Icon } from './Icon'
 
@@ -8,6 +8,10 @@ type TransferQueueProps = {
   open: boolean
   onToggle: () => void
   onRetry: (id: string, overwrite?: boolean) => void
+  /** Hatalı tüm öğeleri yeniden dener. */
+  onRetryAll?: () => void
+  /** "Hedefte var" hatası alan tüm dosyalara aynı kararı uygular. */
+  onResolveConflicts?: (policy: Exclude<ConflictPolicy, 'ask'>) => void
   onCancel?: (id: string) => void
   onRemove: (id: string) => void
   onClearFinished: () => void
@@ -31,12 +35,16 @@ function statusText(item: TransferItem): { text: string; tone: '' | 'ok' | 'erro
   switch (item.status) {
     case 'transferring': {
       const pct = progressOf(item)
-      return { text: item.size && item.transferred !== undefined ? `Aktarılıyor · %${pct}` : 'Aktarılıyor', tone: '' }
+      const eta = item.size && item.transferred !== undefined ? etaText(item.size - item.transferred, item.rate) : null
+      const base = item.size && item.transferred !== undefined ? `Aktarılıyor · %${pct}` : 'Aktarılıyor'
+      return { text: eta ? `${base} · ${eta} kaldı` : base, tone: '' }
     }
     case 'queued': return { text: 'Sırada', tone: '' }
     case 'cancelled': return { text: 'İptal edildi', tone: 'warn' }
     case 'completed': {
       const elapsed = item.startedAt && item.finishedAt ? item.finishedAt - item.startedAt : null
+      if (item.skipped) return { text: item.skipped, tone: 'warn' }
+      if (item.renamedTo) return { text: `Tamamlandı · yeni ad: ${item.renamedTo}`, tone: 'ok' }
       return { text: elapsed ? `Tamamlandı · ${durationText(elapsed)}` : 'Tamamlandı', tone: 'ok' }
     }
     case 'error': return { text: item.error ?? 'Aktarım başarısız', tone: item.errorCode === 'exists' ? 'warn' : 'error' }
@@ -47,6 +55,7 @@ function rateText(item: TransferItem): string {
   if (item.status === 'completed' && item.size && item.startedAt && item.finishedAt && item.finishedAt > item.startedAt) {
     return formatRate((item.size * 1000) / (item.finishedAt - item.startedAt))
   }
+  if (item.status === 'transferring' && item.rate) return formatRate(item.rate)
   if (item.status === 'transferring' && item.transferred && item.startedAt) {
     const elapsed = Date.now() - item.startedAt
     if (elapsed > 250) return formatRate((item.transferred * 1000) / elapsed)
@@ -54,7 +63,8 @@ function rateText(item: TransferItem): string {
   return formatFileSize(item.size)
 }
 
-export function TransferQueue({ items, open, onToggle, onRetry, onCancel, onRemove, onClearFinished }: TransferQueueProps) {
+export function TransferQueue({ items, open, onToggle, onRetry, onRetryAll, onResolveConflicts, onCancel, onRemove, onClearFinished }: TransferQueueProps) {
+  const conflicts = items.filter((item) => item.status === 'error' && item.errorCode === 'exists').length
   const { active, queued, errors } = queueSummary(items)
   const lockedOpen = errors > 0
   const expanded = open || lockedOpen
@@ -74,8 +84,20 @@ export function TransferQueue({ items, open, onToggle, onRetry, onCancel, onRemo
           Aktarımlar <span className="count">{active} etkin</span> · {queued} sırada · {errors} hata
         </button>
         <span className="grow" />
+        {expanded && onRetryAll && items.filter((item) => item.status === 'error' && item.errorCode !== 'exists').length > 1 && (
+          <button className="cg-btn cg-btn-ghost" onClick={onRetryAll}>Tümünü yeniden dene</button>
+        )}
         {expanded && hasFinished && <button className="cg-btn cg-btn-ghost" onClick={onClearFinished}>Tamamlananları temizle</button>}
       </div>
+      {expanded && conflicts > 0 && onResolveConflicts && (
+        <div className="cg-queue-conflicts" role="group" aria-label="Çakışma kararı">
+          <span>{conflicts} dosya hedefte zaten var. Tümüne uygula:</span>
+          <button className="cg-btn cg-btn-sm" onClick={() => onResolveConflicts('overwrite')}>Üzerine yaz</button>
+          <button className="cg-btn cg-btn-sm" onClick={() => onResolveConflicts('newer')}>Daha yeniyse yaz</button>
+          <button className="cg-btn cg-btn-sm" onClick={() => onResolveConflicts('skip')}>Atla</button>
+          <button className="cg-btn cg-btn-sm" onClick={() => onResolveConflicts('rename')}>Yeni adla kaydet</button>
+        </div>
+      )}
       {expanded && (
         <div className="cg-queue-list">
           {!items.length && <p className="cg-help cg-queue-empty">Kuyruk boş. Dosyaları paneller arasında ya da dosya yöneticinizden uzak panele sürükleyin veya seçip Yükle / İndir'e basın.</p>}

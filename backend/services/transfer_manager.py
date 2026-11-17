@@ -178,7 +178,7 @@ class TransferManager:
             return func(conn)
 
     def start(self, direction: str, name: str, local_dir: str, remote_dir: str, overwrite: bool = False,
-              session_id=None, resume: bool = False) -> TransferJob:
+              session_id=None, resume: bool = False, conflict: str | None = None) -> TransferJob:
         snapshot = self._sessions.snapshot(session_id)
         job = TransferJob(id=str(uuid.uuid4()), session_id=snapshot.id)
         with self._lock:
@@ -210,12 +210,12 @@ class TransferManager:
                         if direction == "upload":
                             res = files.upload(
                                 conn, local_dir, name, remote_dir, overwrite,
-                                progress_cb=on_progress, cancel_event=job.cancel_event, resume=resume,
+                                progress_cb=on_progress, cancel_event=job.cancel_event, resume=resume, conflict=conflict,
                             )
                         else:
                             res = files.download(
                                 conn, remote_dir, name, local_dir, overwrite,
-                                progress_cb=on_progress, cancel_event=job.cancel_event, resume=resume,
+                                progress_cb=on_progress, cancel_event=job.cancel_event, resume=resume, conflict=conflict,
                             )
                     finish("completed", result=res)
                 except files.TransferCancelled:

@@ -471,3 +471,38 @@ ul { list-style: none; margin: 0; padding: 0; }
 /* Paper'da 2px turuncu çizgi 3:1'in altında kalıyor; odak çizgisi koyu turuncu. */
 :root[data-theme='light'] .cg-pane.is-focused .cg-pathbar { box-shadow: inset 0 2px 0 var(--accent-hover); }
 .cg-dialog > footer .cg-push-left { margin-right: auto; }
+
+/* ---------- Klasör karşılaştırma ve arama sonuçları ---------- */
+.cg-compare-list { max-height: 50vh; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-app); }
+.cg-compare { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cg-compare th { position: sticky; top: 0; background: var(--bg-raised); color: var(--text-muted); font-weight: 500; text-align: left; padding: 4px 8px; }
+.cg-compare td { padding: 4px 8px; border-top: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+.cg-compare tr.is-different td:nth-child(3) { color: var(--status-warn); }
+.cg-compare tr.is-onlyLocal td:nth-child(3), .cg-compare tr.is-onlyRemote td:nth-child(3) { color: var(--text-accent); }
+.cg-compare tr.is-clickable { cursor: pointer; }
+.cg-compare tr.is-clickable:hover td { background: var(--bg-overlay); }
+
+/* ---------- Harici düzenleyici ---------- */
+.cg-edits { top: auto; bottom: var(--space-2); width: 380px; }
+.cg-edits-list { list-style: none; margin: 0; padding: 0 var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
+.cg-edits-list li { display: flex; align-items: center; gap: var(--space-2); }
+.cg-edits-list .what { flex: 1; min-width: 0; }
+.cg-edits-list .file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cg-statusbar-btn { background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 0; text-decoration: underline dotted; }
+
+/* ---------- Çakışma kararı ---------- */
+.cg-queue-conflicts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); background: var(--status-warn-soft); color: var(--text); font-size: 12px; }
+.cg-queue-conflicts span { margin-right: auto; }
+
+/* ---------- Bağlantı grupları ---------- */
+.cg-side-group-head { display: flex; align-items: center; gap: var(--space-1); width: 100%; padding: 2px var(--space-3); background: none; border: 0; color: var(--text-muted); font: inherit; font-size: 12px; cursor: pointer; text-align: left; }
+.cg-side-group-head:hover { color: var(--text); }
+.cg-side-group-head .cg-ico { transition: transform .12s; }
+.cg-side-group-head .cg-ico.is-open { transform: rotate(90deg); }
+.cg-side-group-head span:nth-child(2) { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cg-side-count { font-family: var(--font-mono); font-size: 11px; }
+.cg-side-group ul { padding-left: var(--space-2); }
+
+/* Görsel / PDF önizlemesi */
+.cg-media-preview { display: block; max-width: 100%; max-height: 240px; margin: 0 auto; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--bg-pane); object-fit: contain; }
+.cg-pdf-preview { width: 100%; height: 320px; max-height: none; }

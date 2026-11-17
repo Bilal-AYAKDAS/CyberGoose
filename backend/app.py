@@ -6,12 +6,13 @@ Tüm hatalar `{"error": str, "code"?: str}` gövdesi ve uygun HTTP durum koduyla
 import logging
 import os
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 from flask_sock import Sock
 
 import file_service as files
 import os_folder
+import sync_service
 from config import (
     API_TOKEN,
     DROPBOX_APP_KEY,
@@ -27,6 +28,8 @@ from services.session_manager import CLOUD_TYPES, SERVER_TYPES, SessionManager
 from services.terminal_manager import TerminalManager
 from services.transfer_manager import TransferManager
 from services.tunnel_manager import TunnelManager
+from services.edit_watcher import EditWatcher
+from config import DATA_DIR
 
 app = Flask(__name__)
 sock = Sock(app)
@@ -38,6 +41,7 @@ sessions = SessionManager()
 transfers = TransferManager(sessions)
 terminals = TerminalManager(sessions)
 tunnels = TunnelManager(sessions)
+external_edits = EditWatcher(transfers, DATA_DIR / "edits")
 sessions.register_cleanup(terminals.close_session_terminals)
 sessions.register_cleanup(tunnels.close_all)
 sessions.register_cleanup(transfers.close_idle)
@@ -141,6 +145,8 @@ def connect():
     host, port, username, password = data.get("host"), data.get("port"), data.get("username"), data.get("password")
     key_path = str(data.get("keyPath") or "").strip() or None
     trusted = str(data.get("trustHostKey") or "").strip() or None
+    passphrase = data.get("keyPassphrase") or None
+    use_agent = bool(data.get("useAgent"))
 
     if connection_id is not None and normalized not in CLOUD_TYPES:
         saved = db.get_connection_secret(connection_id)
@@ -149,14 +155,19 @@ def connect():
         normalized = str(saved["type"] or "").lower()
         host, port, username = saved["host"], saved["port"], saved["username"]
         password = password or saved["password"]
-        if not password and not (normalized == "sftp" and key_path):
+        if normalized == "sftp":
+            key_path = key_path or saved.get("keyPath")
+            passphrase = passphrase or saved.get("passphrase")
+            use_agent = use_agent or saved.get("useAgent", False)
+        if not password and not (normalized == "sftp" and (key_path or use_agent)):
             return error("Bu bağlantı için parola kayıtlı değil", 400, "password_required")
 
     factory = None
     if normalized in SERVER_TYPES:
         conn_type = SERVER_TYPES[normalized]
-        connection = sessions.connect_server(conn_type, host, port, username, password, key_path=key_path, trusted_fingerprint=trusted)
-        factory = sessions.server_factory(conn_type, host, port, username, password, key_path=key_path)
+        ssh = {"passphrase": passphrase, "use_agent": use_agent} if conn_type == "SFTP" else {}
+        connection = sessions.connect_server(conn_type, host, port, username, password, key_path=key_path, trusted_fingerprint=trusted, **ssh)
+        factory = sessions.server_factory(conn_type, host, port, username, password, key_path=key_path, **ssh)
     elif normalized == "dropbox":
         conn_type = "Dropbox"
         connection = sessions.connect_dropbox()
@@ -241,6 +252,34 @@ def _sheet_write_args(data):
     encoding = str(data.get("encoding") or "utf-8")
     newline = "\r\n" if data.get("newline") == "\r\n" else "\n"
     return filepath, sheets, delimiter, encoding, newline
+
+
+def _preview_response(data: bytes, mimetype: str):
+    response = Response(data, mimetype=mimetype)
+    # Önizleme yalnızca uygulama içinde gösterilir; tarayıcı içerik türünü tahmin etmesin.
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.post("/api/local/preview")
+def local_preview():
+    filepath = body().get("path")
+    if not filepath:
+        return error("Dosya yolu gerekli", 400)
+    return _preview_response(*files.read_local_preview(filepath))
+
+
+@app.post("/api/remote/preview")
+def remote_preview():
+    """Uzak resim/PDF önizlemesi; aktarım bağlantısıyla okunur, panel kilitlenmez."""
+    data = body()
+    if not data.get("path"):
+        return error("Dosya yolu gerekli", 400)
+    return _preview_response(*transfers.run_with_connection(
+        data.get("sessionId"), lambda conn: files.read_remote_preview(conn, data["path"]),
+    ))
 
 
 @app.post("/api/local/read")
@@ -336,11 +375,14 @@ def start_transfer():
         return error("Dosya adı, yerel ve uzak klasör gerekli", 400)
     if direction not in ("upload", "download"):
         return error("Yön 'upload' veya 'download' olmalı", 400)
+    if data.get("conflict") and data["conflict"] not in files.CONFLICT_POLICIES:
+        return error("Çakışma kararı " + ", ".join(files.CONFLICT_POLICIES) + " olmalı", 400)
     job = transfers.start(
         direction, name, local_dir, remote_dir,
         overwrite=bool(data.get("overwrite")),
         session_id=data.get("sessionId"),
         resume=bool(data.get("resume")),
+        conflict=str(data["conflict"]) if data.get("conflict") else None,
     )
     return jsonify(job.to_dict()), 202
 
@@ -376,6 +418,34 @@ def plan_transfer():
     return error("Taraf 'local' veya 'remote' olmalı", 400)
 
 
+@app.post("/api/compare")
+def compare_folders():
+    """Yerel ve uzak klasörü alt klasörleriyle karşılaştırır (eşitleme planı)."""
+    data = body()
+    local_path, remote_path = data.get("localPath"), data.get("remotePath")
+    if not (local_path and remote_path):
+        return error("Yerel ve uzak klasör gerekli", 400)
+    result = sync_service.compare_folders(
+        local_path,
+        lambda: transfers.run_with_connection(data.get("sessionId"), lambda conn: files.plan_remote_folder(conn, remote_path)),
+    )
+    return jsonify(result)
+
+
+@app.post("/api/search")
+def search():
+    """Klasörü alt klasörleriyle birlikte ada göre arar."""
+    data = body()
+    side, path, query = data.get("side"), data.get("path"), str(data.get("query") or "")
+    if not path:
+        return error("Klasör yolu gerekli", 400)
+    if side == "local":
+        return jsonify(sync_service.search_local(path, query))
+    if side == "remote":
+        return jsonify(transfers.run_with_connection(data.get("sessionId"), lambda conn: sync_service.search_remote(conn, path, query)))
+    return error("Taraf 'local' veya 'remote' olmalı", 400)
+
+
 @app.post("/api/archive")
 def create_archive():
     data = body()
@@ -386,6 +456,17 @@ def create_archive():
     if not (parent_dir and archive_name.strip()):
         return error("Klasör yolu ve arşiv adı gerekli", 400)
     return jsonify(files.create_local_zip(parent_dir, list(names), archive_name)), 201
+
+
+@app.post("/api/extract")
+def extract_archive():
+    """Yerel zip arşivini yanındaki klasöre açar."""
+    data = body()
+    if data.get("side", "local") != "local":
+        return error("Arşiv açma yalnızca yerel panelde desteklenir", 400)
+    if not data.get("path"):
+        return error("Arşiv yolu gerekli", 400)
+    return jsonify(files.extract_local_zip(data["path"])), 201
 
 
 @app.post("/api/mkdir")
@@ -436,6 +517,38 @@ def delete():
     return error("Taraf 'local' veya 'remote' olmalı", 400)
 
 
+# ---------------------------------------------------------------- harici düzenleyici
+
+@app.get("/api/external-edits")
+def list_external_edits():
+    return jsonify(external_edits.list())
+
+
+@app.post("/api/external-edits")
+def open_external_edit():
+    """Uzak dosyayı geçici klasöre indirir; arayüz onu varsayılan uygulamayla açar."""
+    data = body()
+    if not data.get("path"):
+        return error("Dosya yolu gerekli", 400)
+    return jsonify(external_edits.open(data.get("sessionId"), data["path"])), 201
+
+
+@app.post("/api/external-edits/<edit_id>/sync")
+def sync_external_edit(edit_id):
+    """Kaydedilen değişikliği beklemeden hemen yükler."""
+    result = external_edits.check(edit_id, settle=False)
+    if result is None:
+        return error("Düzenleme bulunamadı", 404)
+    return jsonify(result)
+
+
+@app.delete("/api/external-edits/<edit_id>")
+def close_external_edit(edit_id):
+    if not external_edits.close(edit_id):
+        return error("Düzenleme bulunamadı", 404)
+    return jsonify({"closed": edit_id})
+
+
 # ---------------------------------------------------------------- kayıtlı bağlantılar
 
 def _connection_fields(data):
@@ -448,7 +561,22 @@ def _connection_fields(data):
         raise files.FileServiceError("Ad, sunucu, port ve kullanıcı adı gerekli", 400)
     if not port.isdigit() or not 1 <= int(port) <= 65535:
         raise files.FileServiceError("Port 1-65535 arasında olmalı", 400)
-    return name, conn_type, host, int(port), username
+    # Özel anahtar yalnızca SFTP'de anlamlıdır; diğer türlerde saklanmaz.
+    key_path = str(data.get("keyPath") or "").strip() if conn_type == "SFTP" else ""
+    return name, conn_type, host, int(port), username, key_path or None
+
+
+def _save_args(data):
+    *fields, key_path = _connection_fields(data)
+    group = str(data.get("group") or "").strip()[:60] or None
+    sftp = fields[1] == "SFTP"
+    return fields, {
+        "password": data.get("password") or None,
+        "key_path": key_path,
+        "group": group,
+        "use_agent": sftp and bool(data.get("useAgent")),
+        "passphrase": (data.get("keyPassphrase") or None) if sftp and key_path else None,
+    }
 
 
 @app.get("/api/connections")
@@ -471,17 +599,39 @@ def _connection_response(connection_id, password_saved):
 
 @app.post("/api/connections")
 def create_connection():
-    data = body()
-    password = data.get("password") or None
-    connection_id, password_saved = db.insert_connection(*_connection_fields(data), password=password)
+    fields, extra = _save_args(body())
+    connection_id, password_saved = db.insert_connection(*fields, **extra)
     return jsonify(_connection_response(connection_id, password_saved)), 201
+
+
+@app.post("/api/connections/import/filezilla")
+def import_filezilla():
+    """FileZilla Site Yöneticisi dışa aktarımını (sitemanager.xml) kayıtlı bağlantılara ekler."""
+    import filezilla_import
+
+    xml_text = body().get("xml")
+    if not isinstance(xml_text, str) or not xml_text.strip():
+        return error("FileZilla dosyasının içeriği gerekli", 400)
+    sites, warnings = filezilla_import.parse_sitemanager(xml_text)
+    imported, skipped = [], []
+    for site in sites:
+        if db.find_connection(site["type"], site["host"], site["port"], site["username"]):
+            skipped.append(site["name"])
+            continue
+        connection_id, password_saved = db.insert_connection(
+            site["name"], site["type"], site["host"], site["port"], site["username"],
+            password=site["password"], key_path=site["keyPath"], group=site["group"],
+        )
+        if password_saved is False:
+            warnings.append(f"{site['name']}: parola Windows Kimlik Bilgileri'ne kaydedilemedi.")
+        imported.append(connection_id)
+    return jsonify({"imported": len(imported), "skipped": skipped, "warnings": warnings}), 201
 
 
 @app.put("/api/connections/<int:connection_id>")
 def update_connection(connection_id):
-    data = body()
-    password = data.get("password") or None
-    updated, password_saved = db.update_connection(connection_id, *_connection_fields(data), password=password)
+    fields, extra = _save_args(body())
+    updated, password_saved = db.update_connection(connection_id, *fields, **extra)
     if not updated:
         return error("Kayıtlı bağlantı bulunamadı", 404)
     return jsonify(_connection_response(connection_id, password_saved))
@@ -536,15 +686,21 @@ def connect_terminal():
     connection_id = data.get("connectionId")
     host, port, username, password = data.get("host"), data.get("port") or 22, data.get("username"), data.get("password")
     key_path = str(data.get("keyPath") or "").strip() or None
+    passphrase = data.get("keyPassphrase") or None
+    use_agent = bool(data.get("useAgent"))
     if connection_id is not None:
         saved = db.get_connection_secret(connection_id)
         if not saved:
             return error("Kayıtlı bağlantı bulunamadı", 404)
         host, port, username = saved["host"], saved["port"], saved["username"]
         password = password or saved["password"]
+        key_path = key_path or saved.get("keyPath")
+        passphrase = passphrase or saved.get("passphrase")
+        use_agent = use_agent or saved.get("useAgent", False)
     trusted = str(data.get("trustHostKey") or "").strip() or None
     term = terminals.open_direct(
         host, port, username, password=password, key_path=key_path, cols=cols, rows=rows, trusted_fingerprint=trusted,
+        passphrase=passphrase, use_agent=use_agent,
     )
     return jsonify({"id": term.id}), 201
 

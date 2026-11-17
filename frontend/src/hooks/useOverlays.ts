@@ -36,6 +36,10 @@ export type OverlayState = {
   tunnels: boolean
   quickConnect: boolean
   terminal: { open: boolean; direct: DirectTerminalTarget | null }
+  /** Klasör karşılaştırma penceresi. */
+  compare: boolean
+  /** Alt klasörlerde arama penceresi. */
+  search: { side: PaneId; path: string; query: string } | null
 }
 
 const initialState: OverlayState = {
@@ -50,6 +54,8 @@ const initialState: OverlayState = {
   tunnels: false,
   quickConnect: false,
   terminal: { open: false, direct: null },
+  compare: false,
+  search: null,
 }
 
 type Action =
@@ -77,7 +83,7 @@ export function useOverlays() {
   /** Bir modal ya da menü açıkken genel kısayollar devre dışıdır. */
   const blocking = Boolean(
     state.connectionDialog || state.confirm || state.prompt || state.menu || state.remoteAccess
-    || state.settings || state.tunnels || state.editing,
+    || state.settings || state.tunnels || state.editing || state.compare || state.search,
   )
   return { overlays: state, set, toggle, blocking }
 }

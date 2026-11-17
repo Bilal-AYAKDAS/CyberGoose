@@ -43,7 +43,7 @@ def _delete_secret(connection_id) -> None:
         pass
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 5
 
 
 class DbMyFtp:
@@ -119,6 +119,30 @@ class DbMyFtp:
                     COMMIT;
                     """
                 )
+            if version < 3:
+                # SFTP özel anahtar yolu (dosyanın kendisi değil, yalnızca yolu saklanır).
+                connection.executescript(
+                    """
+                    ALTER TABLE CONNECTIONS ADD COLUMN KEY_PATH TEXT;
+                    PRAGMA user_version = 3;
+                    """
+                )
+            if version < 4:
+                # Kenar çubuğunda bağlantı grupları (FileZilla klasörleri de buraya aktarılır).
+                connection.executescript(
+                    """
+                    ALTER TABLE CONNECTIONS ADD COLUMN GROUP_NAME TEXT;
+                    PRAGMA user_version = 4;
+                    """
+                )
+            if version < 5:
+                # SFTP: SSH agent (Pageant / OpenSSH) ile kimlik doğrulama.
+                connection.executescript(
+                    """
+                    ALTER TABLE CONNECTIONS ADD COLUMN USE_AGENT INTEGER NOT NULL DEFAULT 0;
+                    PRAGMA user_version = 5;
+                    """
+                )
             # Keyring'e taşınamamış eski düz metin parolalar (ör. keyring o an erişilemezdi).
             legacy_rows = connection.execute(
                 "SELECT ID, PASSWORD FROM CONNECTIONS WHERE PASSWORD IS NOT NULL AND PASSWORD != ''"
@@ -133,8 +157,8 @@ class DbMyFtp:
     def list_connections(self):
         with self._connect() as connection:
             rows = connection.execute(
-                """SELECT ID, NAME, TYPE, HOST, PORT, USERNAME, PASSWORD IS NOT NULL AND PASSWORD != ''
-                   FROM CONNECTIONS ORDER BY NAME COLLATE NOCASE, ID"""
+                """SELECT ID, NAME, TYPE, HOST, PORT, USERNAME, PASSWORD IS NOT NULL AND PASSWORD != '', KEY_PATH, GROUP_NAME, USE_AGENT
+                   FROM CONNECTIONS ORDER BY COALESCE(GROUP_NAME, '') COLLATE NOCASE, NAME COLLATE NOCASE, ID"""
             ).fetchall()
         return [
             {
@@ -145,6 +169,10 @@ class DbMyFtp:
                 "port": "" if row[4] is None else str(row[4]),
                 "username": "" if row[5] is None else str(row[5]),
                 "hasPassword": bool(_get_secret(row[0])) or bool(row[6]),
+                "keyPath": row[7] or "",
+                "group": row[8] or "",
+                "useAgent": bool(row[9]),
+                "hasPassphrase": bool(row[7]) and bool(_get_secret(f"{row[0]}:passphrase")),
             }
             for row in rows
         ]
@@ -152,39 +180,60 @@ class DbMyFtp:
     def get_connection_secret(self, connection_id):
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT TYPE, HOST, PORT, USERNAME, PASSWORD FROM CONNECTIONS WHERE ID = ?",
+                "SELECT TYPE, HOST, PORT, USERNAME, PASSWORD, KEY_PATH, USE_AGENT FROM CONNECTIONS WHERE ID = ?",
                 (connection_id,),
             ).fetchone()
         if not row:
             return None
         password = _get_secret(connection_id) or row[4]
-        return {"type": row[0], "host": row[1], "port": row[2], "username": row[3], "password": password}
+        return {"type": row[0], "host": row[1], "port": row[2], "username": row[3], "password": password, "keyPath": row[5] or None,
+                "useAgent": bool(row[6]), "passphrase": _get_secret(f"{connection_id}:passphrase") if row[5] else None}
 
-    def insert_connection(self, name, conn_type, host, port, username, password=None):
+    def insert_connection(self, name, conn_type, host, port, username, password=None, key_path=None, group=None,
+                          use_agent=False, passphrase=None):
         """(kimlik, parola_kaydedildi) döndürür. Parola verilmediyse ikinci değer None'dır."""
         with self._connect() as connection:
             cursor = connection.execute(
-                "INSERT INTO CONNECTIONS (NAME, TYPE, HOST, PORT, USERNAME, PASSWORD) VALUES (?,?,?,?,?,NULL)",
-                (name, conn_type, host, port, username),
+                "INSERT INTO CONNECTIONS (NAME, TYPE, HOST, PORT, USERNAME, PASSWORD, KEY_PATH, GROUP_NAME, USE_AGENT) "
+                "VALUES (?,?,?,?,?,NULL,?,?,?)",
+                (name, conn_type, host, port, username, key_path or None, group or None, int(bool(use_agent))),
             )
             connection.commit()
             connection_id = cursor.lastrowid
         # Aynı kimliğe ait eski bir keyring kaydı kalmışsa yeni bağlantıya taşınmasın.
         _delete_secret(connection_id)
+        _delete_secret(f"{connection_id}:passphrase")
         saved = _set_secret(connection_id, password) if password else None
+        if passphrase and key_path:
+            saved = _set_secret(f"{connection_id}:passphrase", passphrase) and saved is not False
         return connection_id, saved
 
-    def update_connection(self, connection_id, name, conn_type, host, port, username, password=None):
+    def update_connection(self, connection_id, name, conn_type, host, port, username, password=None, key_path=None, group=None,
+                          use_agent=False, passphrase=None):
         """(güncellendi, parola_kaydedildi). Parola verilmezse mevcut kayıtlı parolaya dokunmaz."""
         with self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE CONNECTIONS SET NAME = ?, TYPE = ?, HOST = ?, PORT = ?, USERNAME = ? WHERE ID = ?",
-                (name, conn_type, host, port, username, connection_id),
+                "UPDATE CONNECTIONS SET NAME = ?, TYPE = ?, HOST = ?, PORT = ?, USERNAME = ?, KEY_PATH = ?, GROUP_NAME = ?, USE_AGENT = ? "
+                "WHERE ID = ?",
+                (name, conn_type, host, port, username, key_path or None, group or None, int(bool(use_agent)), connection_id),
             )
             connection.commit()
             updated = cursor.rowcount > 0
         saved = _set_secret(connection_id, password) if updated and password else None
+        if updated and not key_path:
+            _delete_secret(f"{connection_id}:passphrase")
+        elif updated and passphrase:
+            saved = _set_secret(f"{connection_id}:passphrase", passphrase) and saved is not False
         return updated, saved
+
+    def find_connection(self, conn_type, host, port, username):
+        """Aynı sunucu ve kullanıcıya ait kayıt (içe aktarmada çift kaydı önlemek için)."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT ID FROM CONNECTIONS WHERE TYPE = ? AND lower(HOST) = lower(?) AND PORT = ? AND USERNAME = ?",
+                (conn_type, host, port, username),
+            ).fetchone()
+        return row[0] if row else None
 
     def delete_connection(self, connection_id):
         with self._connect() as connection:
@@ -194,6 +243,7 @@ class DbMyFtp:
             deleted = cursor.rowcount > 0
         if deleted:
             _delete_secret(connection_id)
+            _delete_secret(f"{connection_id}:passphrase")
         return deleted
 
     # ------------------------------------------------------------ klasör yer imleri

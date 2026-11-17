@@ -282,7 +282,7 @@ def test_legacy_database_is_migrated_with_ids_preserved(tmp_path, monkeypatch):
         )
     store = db_mod.DbMyFtp(path)
     items = store.list_connections()
-    assert items == [{"id": 7, "name": "Web", "type": "SFTP", "host": "web-01", "port": "22", "username": "deploy", "hasPassword": True}]
+    assert items == [{"id": 7, "name": "Web", "type": "SFTP", "host": "web-01", "port": "22", "username": "deploy", "hasPassword": True, "keyPath": "", "group": "", "useAgent": False, "hasPassphrase": False}]
     assert vault["7"] == "eski-parola"
     with sqlite3.connect(path) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == db_mod.SCHEMA_VERSION

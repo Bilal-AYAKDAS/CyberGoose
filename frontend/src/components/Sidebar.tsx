@@ -1,7 +1,8 @@
-import type { MouseEvent } from 'react'
+import { useRef, useState, type ChangeEvent, type MouseEvent } from 'react'
 import type { ConnectionProfile, ConnectionStatus, FolderBookmark } from '../types'
 import { connectionAddress, isCloud } from '../utils/formatters'
 import { connectionTone } from '../utils/status'
+import { groupServers } from '../utils/groups'
 import { Icon } from './Icon'
 import { StatusDot } from './ProtocolTag'
 
@@ -17,9 +18,22 @@ type SidebarProps = {
   onConnectionMenu: (connection: ConnectionProfile, event: MouseEvent) => void
   onBookmarkSelect: (bookmark: FolderBookmark) => void
   onManageBookmarks: () => void
+  /** FileZilla sitemanager.xml içeriğini içe aktarır. */
+  onImportFileZilla?: (xml: string) => void
 }
 
+
 const MAX_SIDEBAR_BOOKMARKS = 8
+
+/** File.text() her ortamda yok (ör. jsdom); FileReader her yerde çalışır. */
+function readFileText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result ?? ''))
+    reader.onerror = () => reject(reader.error ?? new Error('Dosya okunamadı'))
+    reader.readAsText(file)
+  })
+}
 
 /**
  * Kenar çubuğu: Yerel · Sunucular · Klasör yer imleri · Bulut.
@@ -28,7 +42,22 @@ const MAX_SIDEBAR_BOOKMARKS = 8
  * Parola ve anahtarlar hiçbir biçimde gösterilmez.
  */
 export function Sidebar(props: SidebarProps) {
-  const { homePath, connections, bookmarks, activeConnectionId, statusOf, loadError, onLocalSelect, onConnectionSelect, onConnectionMenu, onBookmarkSelect, onManageBookmarks } = props
+  const { homePath, connections, bookmarks, activeConnectionId, statusOf, loadError, onLocalSelect, onConnectionSelect, onConnectionMenu, onBookmarkSelect, onManageBookmarks, onImportFileZilla } = props
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const fileInput = useRef<HTMLInputElement>(null)
+
+  const toggleGroup = (group: string) => setCollapsed((current) => {
+    const next = new Set(current)
+    if (next.has(group)) next.delete(group)
+    else next.add(group)
+    return next
+  })
+
+  const readImport = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (file && onImportFileZilla) onImportFileZilla(await readFileText(file))
+  }
   const servers = connections.filter((connection) => !isCloud(connection.type))
   const clouds = connections.filter((connection) => isCloud(connection.type))
   const visibleBookmarks = bookmarks.slice(0, MAX_SIDEBAR_BOOKMARKS)
@@ -73,8 +102,29 @@ export function Sidebar(props: SidebarProps) {
           </button>
         </li>
       </ul>
-      <h6>Sunucular</h6>
-      <ul>{servers.map(renderConnection)}</ul>
+      <div className="cg-side-head">
+        <h6>Sunucular</h6>
+        {onImportFileZilla && (
+          <>
+            <button className="cg-btn cg-btn-ghost cg-btn-sm" title="FileZilla Site Yöneticisi dosyasını (sitemanager.xml) içe aktar" onClick={() => fileInput.current?.click()}>İçe aktar</button>
+            <input ref={fileInput} type="file" accept=".xml,text/xml" hidden aria-label="FileZilla dosyası seç" onChange={(event) => { void readImport(event) }} />
+          </>
+        )}
+      </div>
+      {groupServers(servers).map(([group, members]) => (
+        group === ''
+          ? <ul key="__ungrouped">{members.map(renderConnection)}</ul>
+          : (
+            <div key={group} className="cg-side-group">
+              <button className="cg-side-group-head" aria-expanded={!collapsed.has(group)} onClick={() => toggleGroup(group)}>
+                <Icon name="chevron-right" size={12} className={collapsed.has(group) ? undefined : 'is-open'} />
+                <span>{group}</span>
+                <span className="cg-side-count">{members.length}</span>
+              </button>
+              {!collapsed.has(group) && <ul>{members.map(renderConnection)}</ul>}
+            </div>
+          )
+      ))}
       {!servers.length && <p className="cg-help cg-side-empty">{loadError ?? 'Kayıtlı sunucu yok. "Yeni bağlantı" ile ekleyin.'}</p>}
       <div className="cg-side-head">
         <h6>Klasör yer imleri</h6>

@@ -88,6 +88,14 @@ def describe_connect_error(exc: BaseException, host: str, conn_type: str) -> fil
                 502,
                 "host_key_changed",
             )
+        if isinstance(exc, paramiko.PasswordRequiredException):
+            return files.FileServiceError(
+                f"{prefix}: özel anahtar parola korumalı. Anahtar parolasını girin.", 401, "key_passphrase_required",
+            )
+        if isinstance(exc, paramiko.SSHException) and "private key file is encrypted" in str(exc).lower():
+            return files.FileServiceError(
+                f"{prefix}: özel anahtar parola korumalı. Anahtar parolasını girin.", 401, "key_passphrase_required",
+            )
         if isinstance(exc, paramiko.AuthenticationException):
             return files.FileServiceError(f"{prefix}: kullanıcı adı, parola veya anahtar hatalı.", 401, "auth_failed")
         if isinstance(exc, paramiko.SSHException) and "key" in str(exc).lower() and "passphrase" in str(exc).lower():
@@ -117,14 +125,15 @@ def describe_connect_error(exc: BaseException, host: str, conn_type: str) -> fil
 
 
 def open_server_connection(conn_type: str, host: str, port: int, username: str, password: str | None,
-                           key_path: str | None = None, trusted_fingerprint: str | None = None):
+                           key_path: str | None = None, trusted_fingerprint: str | None = None,
+                           passphrase: str | None = None, use_agent: bool = False):
     if conn_type in ("FTP", "FTPS"):
         from providers.ftp import FTPOperations
         return FTPOperations(host, port, username, password, tls=conn_type == "FTPS")
     from providers.sftp import SFTPOperations
     return SFTPOperations(
         host, port, username, password=password or None, key_filename=key_path or None,
-        trusted_fingerprint=trusted_fingerprint,
+        trusted_fingerprint=trusted_fingerprint, passphrase=passphrase, use_agent=use_agent,
     )
 
 
@@ -215,24 +224,35 @@ class SessionManager:
         self.state.session_id = None
 
     def connect_server(self, conn_type: str, host: str, port, username: str, password: str | None,
-                       key_path: str | None = None, trusted_fingerprint: str | None = None):
-        if not (host and port and username and (password or (conn_type == "SFTP" and key_path))):
+                       key_path: str | None = None, trusted_fingerprint: str | None = None,
+                       passphrase: str | None = None, use_agent: bool = False):
+        if not (host and port and username and (password or (conn_type == "SFTP" and (key_path or use_agent)))):
             raise files.FileServiceError("Sunucu, port, kullanıcı adı ve parola gerekli", 400, "missing_fields")
         port_number = _parse_port(port)
         try:
-            return open_server_connection(conn_type, host, port_number, username, password, key_path, trusted_fingerprint)
+            return open_server_connection(
+                conn_type, host, port_number, username, password, key_path, trusted_fingerprint,
+                passphrase=passphrase, use_agent=use_agent,
+            )
         except Exception as exc:
+            if use_agent and type(exc).__name__ in ("AuthenticationException", "SSHException") and not (password or key_path):
+                raise files.FileServiceError(
+                    f"{host} bağlantısı kurulamadı: SSH agent'ta (Pageant veya OpenSSH) uygun anahtar yok ya da sunucu kabul etmedi.",
+                    401, "agent_failed",
+                ) from exc
             logger.warning("%s bağlantısı kurulamadı: %s", conn_type, type(exc).__name__)
             raise describe_connect_error(exc, host, conn_type) from exc
 
     def server_factory(self, conn_type: str, host: str, port, username: str, password: str | None,
-                       key_path: str | None = None):
+                       key_path: str | None = None, passphrase: str | None = None, use_agent: bool = False):
         """Aynı sunucuya yeni bağlantı açan fonksiyon (aktarımlar için)."""
         port_number = _parse_port(port)
 
         def factory():
             try:
-                return open_server_connection(conn_type, host, port_number, username, password, key_path)
+                return open_server_connection(
+                    conn_type, host, port_number, username, password, key_path, passphrase=passphrase, use_agent=use_agent,
+                )
             except Exception as exc:
                 raise describe_connect_error(exc, host, conn_type) from exc
 
@@ -247,6 +267,11 @@ class SessionManager:
                 self.state.pending_dropbox = None
                 return pending
             if pending is not None:
+                # İzin sekmesi kapatılmış olabilir: sayfa yeniden açılır, akış takılı kalmaz.
+                try:
+                    pending.get_access_token()
+                except Exception:
+                    logger.warning("Dropbox izin sayfası yeniden açılamadı", exc_info=True)
                 return None
             try:
                 connection = DropboxOperations()

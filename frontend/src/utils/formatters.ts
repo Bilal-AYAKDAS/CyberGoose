@@ -76,3 +76,12 @@ export function durationText(ms: number): string {
   const seconds = Math.max(1, Math.round(ms / 1000))
   return seconds < 60 ? `${seconds} sn` : `${Math.floor(seconds / 60)} dk ${seconds % 60} sn`
 }
+
+/** Kalan süre: "45 sn", "3 dk 10 sn", "1 sa 5 dk". Hesaplanamıyorsa null. */
+export function etaText(remainingBytes: number, bytesPerSecond: number | undefined): string | null {
+  if (!bytesPerSecond || bytesPerSecond <= 0 || !Number.isFinite(remainingBytes) || remainingBytes < 0) return null
+  const seconds = Math.max(1, Math.round(remainingBytes / bytesPerSecond))
+  if (seconds < 60) return `${seconds} sn`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} dk ${seconds % 60} sn`
+  return `${Math.floor(seconds / 3600)} sa ${Math.floor((seconds % 3600) / 60)} dk`
+}

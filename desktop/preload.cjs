@@ -12,6 +12,11 @@ contextBridge.exposeInMainWorld('cyberGoose', {
   // Yerel API hazır olunca adresini ve istek anahtarını verir; başlatılamazsa hata fırlatır.
   backend: () => ipcRenderer.invoke('cybergoose:backend'),
   launchRdp: (host, port) => ipcRenderer.invoke('cybergoose:launch-rdp', String(host), port),
+  // Yerel dosyayı varsayılan uygulamayla aç / Gezgin'de göster (main süreç yolu doğrular).
+  openPath: (target) => ipcRenderer.invoke('cybergoose:open-path', String(target)),
+  showItemInFolder: (target) => ipcRenderer.invoke('cybergoose:show-item', String(target)),
+  // GitHub'daki son sürümü denetler: { current, latest, available, url, notes }.
+  checkForUpdate: () => ipcRenderer.invoke('cybergoose:check-update'),
   notify: (title, body) => ipcRenderer.send('cybergoose:notify', String(title), String(body)),
   // Gezgin'den bırakılan dosyanın yolu. File nesnesi yalnızca preload'da yola çevrilebilir;
   // yalnızca kullanıcının kendi sürüklediği dosyalar için çalışır.

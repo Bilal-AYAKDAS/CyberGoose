@@ -1,11 +1,52 @@
 import { useEffect, useState } from 'react'
-import { api } from '../services/apiClient'
+import { api, previewBlob } from '../services/apiClient'
 import type { FileEntry, FileInspection, RemoteDetails } from '../types'
 import { formatDate, formatFileSize } from '../utils/formatters'
+import { previewKind } from '../utils/preview'
 import { Icon } from './Icon'
 import { Notice } from './Notice'
 
-type FileInspectorProps = { entry: FileEntry | null; onClose: () => void }
+type FileInspectorProps = { entry: FileEntry | null; onClose: () => void; sessionId?: number | null }
+
+type MediaState = { path: string; url?: string; error?: string }
+
+/** Görsel ve PDF dosyalarını backend'den Blob olarak alıp gösterir. */
+function MediaPreview({ entry, sessionId }: { entry: FileEntry; sessionId?: number | null }) {
+  const kind = previewKind(entry.name)
+  const [media, setMedia] = useState<MediaState | null>(null)
+
+  useEffect(() => {
+    if (!kind) return
+    const path = entry.path
+    let active = true
+    let url: string | undefined
+    previewBlob(entry.source, path, sessionId)
+      .then((blob) => {
+        if (!active) return
+        url = URL.createObjectURL(blob)
+        setMedia({ path, url })
+      })
+      .catch((error: unknown) => {
+        if (active) setMedia({ path, error: error instanceof Error ? error.message : 'Önizleme alınamadı.' })
+      })
+    return () => {
+      active = false
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [entry.path, entry.source, kind, sessionId])
+
+  if (!kind) return null
+  const current = media?.path === entry.path ? media : null
+  return (
+    <div className="cg-popover-section">
+      <div className="cg-label">Önizleme</div>
+      {!current && <span className="cg-help">Önizleme yükleniyor…</span>}
+      {current?.error && <Notice tone="error" title={current.error} />}
+      {current?.url && kind === 'image' && <img className="cg-media-preview" src={current.url} alt={`${entry.name} önizleme`} />}
+      {current?.url && kind === 'pdf' && <iframe className="cg-media-preview cg-pdf-preview" title="PDF önizleme" src={current.url} />}
+    </div>
+  )
+}
 
 type InspectionState = {
   path: string
@@ -18,7 +59,7 @@ type InspectionState = {
  * Dosya detayları (yüzen katman). Yerel dosyalarda SHA-256 ve önizleme `/api/local/info`'dan,
  * uzak dosyalarda izinler `/api/remote/info`'dan gelir; FTP/SFTP'de izin değiştirilebilir.
  */
-export function FileInspector({ entry, onClose }: FileInspectorProps) {
+export function FileInspector({ entry, onClose, sessionId }: FileInspectorProps) {
   const [inspection, setInspection] = useState<InspectionState | null>(null)
   const [mode, setMode] = useState('')
   const [chmodState, setChmodState] = useState<{ path: string; busy: boolean; error?: string; done?: boolean }>({ path: '', busy: false })
@@ -97,6 +138,7 @@ export function FileInspector({ entry, onClose }: FileInspectorProps) {
           <Notice tone="error" title={current.error} />
         </div>
       )}
+      {entry.kind !== 'folder' && <MediaPreview key={`${entry.source}:${entry.path}`} entry={entry} sessionId={sessionId} />}
       {preview && (
         <div className="cg-popover-section">
           <div className="cg-label">Önizleme</div>

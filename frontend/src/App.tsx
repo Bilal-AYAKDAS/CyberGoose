@@ -17,11 +17,14 @@ import { TransferQueue } from './components/TransferQueue'
 import { useBookmarks } from './hooks/useBookmarks'
 import { QUICK_ID, toProfile, useConnections } from './hooks/useConnections'
 import { useDirectory } from './hooks/useDirectory'
+import { useExternalEdits } from './hooks/useExternalEdits'
+import { ExternalEditsPanel } from './components/ExternalEditsPanel'
 import { useFileActions } from './hooks/useFileActions'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useOverlays, type ConfirmState, type PromptState } from './hooks/useOverlays'
 import { useSettings } from './hooks/useSettings'
 import { useTheme } from './hooks/useTheme'
+import { useUpdateCheck } from './hooks/useUpdateCheck'
 import { useTransferQueue } from './hooks/useTransferQueue'
 import { api, type HostKeyInfo } from './services/apiClient'
 import type { ConnectionProfile, FileEntry, FolderBookmark, PaneId } from './types'
@@ -33,6 +36,8 @@ const RemoteEditorModal = lazy(() => import('./components/RemoteEditorModal').th
 const SheetEditorModal = lazy(() => import('./components/SheetEditorModal').then((m) => ({ default: m.SheetEditorModal })))
 const SettingsModal = lazy(() => import('./components/SettingsModal').then((m) => ({ default: m.SettingsModal })))
 const TunnelModal = lazy(() => import('./components/TunnelModal').then((m) => ({ default: m.TunnelModal })))
+const SearchModal = lazy(() => import('./components/SearchModal').then((m) => ({ default: m.SearchModal })))
+const CompareModal = lazy(() => import('./components/CompareModal').then((m) => ({ default: m.CompareModal })))
 const RemoteAccessModal = lazy(() => import('./components/RemoteAccessModal').then((m) => ({ default: m.RemoteAccessModal })))
 
 type PaneNotice = { tone: 'warn' | 'error'; title: string } | null
@@ -58,6 +63,7 @@ function fromWorkspace(target: EventTarget | null) {
 function App({ onReady }: { onReady?: () => void }) {
   const { theme, preference: themePreference, setPreference: setThemePreference, toggleTheme } = useTheme()
   const { settings, setSettings } = useSettings()
+  const updates = useUpdateCheck(settings.checkUpdates)
   const { overlays, set: setOverlay, toggle: toggleOverlay, blocking } = useOverlays()
 
   // ---------------------------------------------------------------- paneller
@@ -70,6 +76,11 @@ function App({ onReady }: { onReady?: () => void }) {
   const [query, setQuery] = useState('')
   const [editSignal, setEditSignal] = useState<Record<PaneId, number>>({ local: 0, remote: 0 })
   const [remoteNotice, setRemoteNotice] = useState<PaneNotice>(null)
+  const openDownload = useCallback((url: string) => {
+    window.cyberGoose?.openExternal(url).catch((error: unknown) => {
+      setRemoteNotice({ tone: 'error', title: error instanceof Error ? error.message : 'İndirme sayfası açılamadı' })
+    })
+  }, [])
 
   const openConfirm = useCallback((confirm: ConfirmState) => setOverlay({ confirm }), [setOverlay])
   const openPrompt = useCallback((prompt: PromptState) => setOverlay({ prompt }), [setOverlay])
@@ -212,7 +223,7 @@ function App({ onReady }: { onReady?: () => void }) {
 
   // ---------------------------------------------------------------- yer imleri ve transferler
   const { bookmarks, bookmarksError, bookmarksOpen, setBookmarksOpen, addBookmark, deleteBookmark } = useBookmarks()
-  const { transfers, queueOpen, activeTransfer, activeCount, setQueueOpen, enqueueMany, enqueueFolders, cancelTransfer, retryTransfer, removeTransfer, clearFinished } = useTransferQueue({
+  const { transfers, queueOpen, activeTransfer, activeCount, setQueueOpen, enqueueMany, enqueueFolders, enqueueRelative, cancelTransfer, retryTransfer, retryAll, resolveConflicts, removeTransfer, clearFinished } = useTransferQueue({
     localPath: local.path,
     remotePath,
     activeConnection: isConnected ? activeConnection : null,
@@ -250,6 +261,53 @@ function App({ onReady }: { onReady?: () => void }) {
   const currentFolder = focusedPane === 'local'
     ? (local.path ? { label: local.crumbs.at(-1)?.name || local.path, path: local.path, connectionId: null } : null)
     : (isConnected && remote.path && activeConnection?.saved ? { label: remote.crumbs.at(-1)?.name === '/' ? activeConnection.name : remote.crumbs.at(-1)?.name ?? remote.path, path: remote.path, connectionId: activeConnection.id } : null)
+
+  // ---------------------------------------------------------------- FileZilla içe aktarma
+  const importFileZilla = useCallback(async (xml: string) => {
+    try {
+      const outcome = await api.importFileZilla(xml)
+      await loadConnections()
+      const parts = [`${outcome.imported} bağlantı içe aktarıldı.`]
+      if (outcome.skipped.length) parts.push(`${outcome.skipped.length} tanesi zaten kayıtlıydı.`)
+      if (outcome.warnings.length) parts.push(outcome.warnings.join(' '))
+      setRemoteNotice({ tone: 'warn', title: parts.join(' ') })
+    } catch (error) {
+      setRemoteNotice({ tone: 'error', title: messageOf(error, 'FileZilla dosyası içe aktarılamadı') })
+    }
+  }, [loadConnections])
+
+  // ---------------------------------------------------------------- yerel dosyayı aç / göster / arşivi çıkar
+  const openLocalPath = useCallback(async (path: string) => {
+    try {
+      await window.cyberGoose?.openPath?.(path)
+    } catch (error) {
+      setRemoteNotice({ tone: 'error', title: messageOf(error, 'Dosya açılamadı') })
+    }
+  }, [])
+
+  const showInFolder = useCallback(async (path: string) => {
+    try {
+      await window.cyberGoose?.showItemInFolder?.(path)
+    } catch (error) {
+      setRemoteNotice({ tone: 'error', title: messageOf(error, "Gezgin'de gösterilemedi") })
+    }
+  }, [])
+
+  const extractZip = useCallback(async (path: string) => {
+    try {
+      const extracted = await api.extractZip(path)
+      local.reload()
+      const skipped = extracted.skipped ? ` Güvenli olmayan ${extracted.skipped} öğe atlandı.` : ''
+      setRemoteNotice({ tone: 'warn', title: `${extracted.files} dosya "${extracted.name}" klasörüne çıkarıldı.${skipped}` })
+    } catch (error) {
+      setRemoteNotice({ tone: 'error', title: messageOf(error, 'Arşiv açılamadı') })
+    }
+  }, [local])
+
+  // ---------------------------------------------------------------- harici düzenleyici
+  const showEditError = useCallback((message: string) => setRemoteNotice({ tone: 'error', title: message }), [])
+  const externalEdits = useExternalEdits(showEditError)
+  const [editsOpen, setEditsOpen] = useState(false)
 
   // ---------------------------------------------------------------- dosya eylemleri
   const reloadPane = useCallback((pane: PaneId) => {
@@ -311,6 +369,27 @@ function App({ onReady }: { onReady?: () => void }) {
           }
           if (!isXlsx) {
             editItems.push({ label: 'Metin olarak düzenle', onSelect: () => setOverlay({ editing: { entry, side: pane, mode: 'text' } }) })
+          }
+          if (pane === 'local') {
+            const desktop = window.cyberGoose
+            if (desktop?.openPath) {
+              editItems.push({ label: 'Varsayılan uygulamayla aç', onSelect: () => { void openLocalPath(entry.path) } })
+            }
+            if (desktop?.showItemInFolder) {
+              editItems.push({ label: "Gezgin'de göster", onSelect: () => { void showInFolder(entry.path) } })
+            }
+            if (lower.endsWith('.zip')) {
+              editItems.push({ label: 'Buraya çıkar', onSelect: () => { void extractZip(entry.path) } })
+            }
+          }
+          if (pane === 'remote') {
+            editItems.push({
+              label: 'Düzenleyicide aç (kaydedince yüklenir)',
+              onSelect: () => {
+                setEditsOpen(true)
+                void externalEdits.open(entry.path, sessionId)
+              },
+            })
           }
           return editItems
         })(),
@@ -488,6 +567,12 @@ function App({ onReady }: { onReady?: () => void }) {
         onToggleHidden={toggleHidden}
         onToggleBookmarks={() => setBookmarksOpen((open) => !open)}
         onQueryChange={setQuery}
+        canCompare={Boolean(isConnected && local.path && remote.path)}
+        onCompare={() => setOverlay({ compare: true })}
+        onDeepSearch={() => {
+          const path = focusedPane === 'local' ? local.path : (isConnected ? remote.path : null)
+          if (path && query.trim()) setOverlay({ search: { side: focusedPane, path, query: query.trim() } })
+        }}
       />
       {overlays.quickConnect && (
         <QuickConnectBar onConnect={quickConnect} onClose={() => setOverlay({ quickConnect: false })} />
@@ -505,8 +590,23 @@ function App({ onReady }: { onReady?: () => void }) {
           onConnectionMenu={connectionMenu}
           onBookmarkSelect={selectBookmark}
           onManageBookmarks={() => setBookmarksOpen(true)}
+          onImportFileZilla={(xml) => { void importFileZilla(xml) }}
         />
         <div className="cg-workspace">
+          {updates.available && (
+            <div className="cg-workspace-notice">
+              <Notice
+                tone="ok"
+                title={`CyberGoose ${updates.available.latest} yayınlandı (kurulu: ${updates.available.current})`}
+                action={(
+                  <span className="cg-inline">
+                    {updates.available.url && <button className="cg-btn cg-btn-sm cg-btn-primary" onClick={() => openDownload(updates.available!.url)}>İndir</button>}
+                    <button className="cg-btn cg-btn-icon cg-btn-ghost cg-btn-sm" aria-label="Güncelleme bildirimini kapat" onClick={updates.dismiss}><Icon name="close" /></button>
+                  </span>
+                )}
+              />
+            </div>
+          )}
           {remoteNotice && (
             <div className="cg-workspace-notice">
               <Notice tone={remoteNotice.tone} title={remoteNotice.title} action={<button className="cg-btn cg-btn-icon cg-btn-ghost cg-btn-sm" aria-label="Bildirimi kapat" onClick={() => setRemoteNotice(null)}><Icon name="close" /></button>} />
@@ -553,7 +653,15 @@ function App({ onReady }: { onReady?: () => void }) {
             onSelect={selectBookmark}
           />
         )}
-        <FileInspector entry={overlays.inspected} onClose={() => setOverlay({ inspected: null })} />
+        {editsOpen && externalEdits.edits.length > 0 && (
+          <ExternalEditsPanel
+            edits={externalEdits.edits}
+            onSync={(id) => { void externalEdits.syncNow(id) }}
+            onStop={(id) => { void externalEdits.close(id) }}
+            onClose={() => setEditsOpen(false)}
+          />
+        )}
+        <FileInspector entry={overlays.inspected} sessionId={sessionId} onClose={() => setOverlay({ inspected: null })} />
       </div>
       <ChunkBoundary onReset={() => setOverlay({ terminal: { open: false, direct: null } })}>
       <Suspense fallback={null}>
@@ -573,6 +681,8 @@ function App({ onReady }: { onReady?: () => void }) {
         open={queueOpen}
         onToggle={() => setQueueOpen((open) => !open)}
         onRetry={retryTransfer}
+        onRetryAll={retryAll}
+        onResolveConflicts={resolveConflicts}
         onCancel={cancelTransfer}
         onRemove={removeTransfer}
         onClearFinished={clearFinished}
@@ -583,6 +693,8 @@ function App({ onReady }: { onReady?: () => void }) {
         selectedSize={selectedFilesSize}
         activeTransfer={activeTransfer ? (activeCount > 1 ? `${activeTransfer.name} ve ${activeCount - 1} dosya daha` : activeTransfer.name) : null}
         connection={isConnected ? activeConnection : null}
+        editsCount={externalEdits.edits.length}
+        onShowEdits={() => setEditsOpen((open) => !open)}
       />
       {overlays.connectionDialog && (
         <ConnectionModal
@@ -592,7 +704,7 @@ function App({ onReady }: { onReady?: () => void }) {
           onConnect={(values, trustHostKey) => connectFromDialog(values, overlays.connectionDialog?.initial, trustHostKey)}
         />
       )}
-      <ChunkBoundary onReset={() => setOverlay({ remoteAccess: null, settings: false, tunnels: false, editing: null })}>
+      <ChunkBoundary onReset={() => setOverlay({ remoteAccess: null, settings: false, tunnels: false, editing: null, compare: false, search: null })}>
       <Suspense fallback={null}>
         {overlays.remoteAccess && (
           <RemoteAccessModal
@@ -608,7 +720,43 @@ function App({ onReady }: { onReady?: () => void }) {
             onThemeChange={setThemePreference}
             settings={settings}
             onChange={setSettings}
+            update={updates.supported ? { state: updates.state, onCheck: () => { void updates.check(true) }, onDownload: openDownload } : undefined}
             onClose={() => setOverlay({ settings: false })}
+          />
+        )}
+        {overlays.compare && local.path && remote.path && (
+          <CompareModal
+            localPath={local.path}
+            remotePath={remote.path}
+            sessionId={sessionId}
+            onSync={(rows, direction) => enqueueRelative(
+              rows.map((row) => ({ relativeDir: row.relativeDir, name: row.name, size: direction === 'upload' ? row.localSize : row.remoteSize })),
+              direction,
+              local.path as string,
+              remote.path as string,
+              true,
+            )}
+            onClose={() => setOverlay({ compare: false })}
+          />
+        )}
+        {overlays.search && (
+          <SearchModal
+            side={overlays.search.side}
+            path={overlays.search.path}
+            query={overlays.search.query}
+            sessionId={sessionId}
+            onOpen={(hit) => {
+              const pane = overlays.search?.side ?? 'local'
+              setOverlay({ search: null })
+              focusPane(pane)
+              if (hit.kind === 'folder') {
+                navigate(pane, hit.path)
+              } else {
+                navigate(pane, hit.parent)
+                setPaneSelection(pane, [hit.name])
+              }
+            }}
+            onClose={() => setOverlay({ search: null })}
           />
         )}
         {overlays.tunnels && <TunnelModal onClose={() => setOverlay({ tunnels: false })} />}

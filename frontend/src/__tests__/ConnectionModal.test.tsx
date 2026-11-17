@@ -27,7 +27,7 @@ describe('ConnectionModal', () => {
     await user.type(screen.getByLabelText('Sunucu'), 'test.rebex.net')
     await user.type(screen.getByLabelText('Kullanıcı adı'), 'demo')
     await user.type(screen.getByLabelText('Parola'), 'gizli{enter}')
-    expect(onConnect).toHaveBeenCalledWith({ name: 'Rebex', type: 'SFTP', host: 'test.rebex.net', port: '22', username: 'demo', password: 'gizli' })
+    expect(onConnect).toHaveBeenCalledWith({ name: 'Rebex', type: 'SFTP', host: 'test.rebex.net', port: '22', username: 'demo', password: 'gizli', keyPath: '', group: '', useAgent: false, keyPassphrase: '' })
     expect(onClose).toHaveBeenCalled()
   })
 
@@ -78,5 +78,41 @@ describe('ConnectionModal', () => {
     await user.click(screen.getByRole('button', { name: 'Bağlan' }))
     expect(await screen.findByText('Tarayıcıda Dropbox iznini onaylayın.')).toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
+  })
+  it('keeps the stored SFTP key path when editing a saved connection', () => {
+    render(
+      <ConnectionModal
+        initial={{ id: '9', name: 'Anahtarlı', type: 'SFTP', host: 'web-01', port: '22', username: 'deploy', hasPassword: false, keyPath: 'C:/k/id_ed25519', saved: true }}
+        onClose={vi.fn()}
+        onSave={noop}
+        onConnect={vi.fn()}
+      />,
+    )
+    expect(screen.getByDisplayValue('C:/k/id_ed25519')).toBeInTheDocument()
+  })
+  it('connects through the SSH agent without a password', async () => {
+    const user = userEvent.setup()
+    const onConnect = vi.fn().mockResolvedValue(undefined)
+    render(<ConnectionModal onClose={vi.fn()} onSave={noop} onConnect={onConnect} />)
+    await user.type(screen.getByLabelText('Bağlantı adı'), 'Pageant')
+    await user.type(screen.getByLabelText('Sunucu'), 'web-01')
+    await user.type(screen.getByLabelText('Kullanıcı adı'), 'deploy')
+    await user.click(screen.getByLabelText(/SSH agent kullan/))
+    await user.click(screen.getByRole('button', { name: 'Bağlan' }))
+    expect(onConnect).toHaveBeenCalledWith(expect.objectContaining({ useAgent: true, password: '' }))
+  })
+
+  it('asks for the key passphrase only when a key path is set', async () => {
+    const user = userEvent.setup()
+    const onConnect = vi.fn().mockResolvedValue(undefined)
+    render(<ConnectionModal onClose={vi.fn()} onSave={noop} onConnect={onConnect} />)
+    expect(screen.queryByLabelText('Anahtar parolası (varsa)')).not.toBeInTheDocument()
+    await user.type(screen.getByLabelText('Bağlantı adı'), 'Anahtar')
+    await user.type(screen.getByLabelText('Sunucu'), 'web-01')
+    await user.type(screen.getByLabelText('Kullanıcı adı'), 'deploy')
+    await user.type(screen.getByLabelText('Özel anahtar yolu (isteğe bağlı)'), 'C:/k/id')
+    await user.type(screen.getByLabelText('Anahtar parolası (varsa)'), 'gizli-anahtar')
+    await user.click(screen.getByRole('button', { name: 'Bağlan' }))
+    expect(onConnect).toHaveBeenCalledWith(expect.objectContaining({ keyPath: 'C:/k/id', keyPassphrase: 'gizli-anahtar' }))
   })
 })

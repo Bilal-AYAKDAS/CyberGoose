@@ -30,6 +30,10 @@ export const toProfile = (saved: SavedConnection): ConnectionProfile => ({
   port: saved.port,
   username: saved.username,
   hasPassword: saved.hasPassword,
+  keyPath: saved.keyPath || undefined,
+  group: saved.group || undefined,
+  useAgent: saved.useAgent || undefined,
+  hasPassphrase: saved.hasPassphrase || undefined,
   saved: true,
 })
 
@@ -48,7 +52,7 @@ type UseConnectionsOptions = {
   onHostKey: (info: HostKeyInfo, trust: () => Promise<void>) => void
 }
 
-type ConnectOptions = { password?: string; startPath?: string; keyPath?: string; trustHostKey?: string }
+type ConnectOptions = { password?: string; startPath?: string; keyPath?: string; trustHostKey?: string; keyPassphrase?: string; useAgent?: boolean }
 
 export function useConnections({ onConnected, onDisconnected, onNeedPassword, onNotice, onHostKey }: UseConnectionsOptions) {
   const [savedConnections, setSavedConnections] = useState<ConnectionProfile[]>([])
@@ -108,7 +112,7 @@ export function useConnections({ onConnected, onDisconnected, onNeedPassword, on
   }, [onConnected])
 
   const connectTo = useCallback(async (connection: ConnectionProfile, options: ConnectOptions = {}): Promise<ConnectOutcome> => {
-    const { password, startPath = '/', keyPath, trustHostKey } = options
+    const { password, startPath = '/', keyPath, trustHostKey, keyPassphrase, useAgent } = options
     setConnectingId(connection.id)
     setFailedId(null)
     setActiveId(connection.id)
@@ -121,6 +125,8 @@ export function useConnections({ onConnected, onDisconnected, onNeedPassword, on
         password,
         keyPath,
         trustHostKey,
+        keyPassphrase,
+        useAgent,
       })
       if ('pending' in result) return { pending: result.message }
       markConnected(connection.id, result, startPath)
@@ -147,7 +153,7 @@ export function useConnections({ onConnected, onDisconnected, onNeedPassword, on
       onNotice({ tone: 'warn', title: CLOUD_SETUP_HINT[connection.type] })
       return
     }
-    if (connection.saved && !connection.hasPassword) {
+    if (connection.saved && !connection.hasPassword && !(connection.type === 'SFTP' && (connection.keyPath || connection.useAgent))) {
       onNeedPassword(connection)
       return
     }
@@ -163,7 +169,8 @@ export function useConnections({ onConnected, onDisconnected, onNeedPassword, on
           onHostKey(hostKey, () => attempt(hostKey.fingerprint))
           return
         }
-        if (error instanceof ApiError && error.code === 'password_required') {
+        if (error instanceof ApiError && (error.code === 'password_required' || error.code === 'key_passphrase_required')) {
+          if (error.code === 'key_passphrase_required') onNotice({ tone: 'warn', title: error.message })
           onNeedPassword(connection)
           return
         }
@@ -194,6 +201,10 @@ export function useConnections({ onConnected, onDisconnected, onNeedPassword, on
       host: values.host.trim(),
       port: values.port,
       username: values.username.trim(),
+      keyPath: values.type === 'SFTP' ? values.keyPath?.trim() ?? '' : '',
+      group: values.group?.trim() ?? '',
+      useAgent: values.type === 'SFTP' && Boolean(values.useAgent),
+      ...(values.type === 'SFTP' && values.keyPassphrase ? { keyPassphrase: values.keyPassphrase } : {}),
       ...(values.password ? { password: values.password } : {}),
     }
     const saved = initial?.saved ? await api.updateConnection(initial.id, input) : await api.createConnection(input)
@@ -211,7 +222,7 @@ export function useConnections({ onConnected, onDisconnected, onNeedPassword, on
     const keyPath = values.keyPath?.trim() || undefined
     if (initial?.saved) {
       const profile = await saveFromDialog(values, initial)
-      return connectTo(profile, { password: values.password || undefined, keyPath, trustHostKey })
+      return connectTo(profile, { password: values.password || undefined, keyPath, trustHostKey, keyPassphrase: values.keyPassphrase || undefined, useAgent: values.useAgent || undefined })
     }
     const draftId = `new-${Date.now()}`
     setConnectingId(draftId)
@@ -228,6 +239,8 @@ export function useConnections({ onConnected, onDisconnected, onNeedPassword, on
         keyPath,
         clientId: draftId,
         trustHostKey,
+        keyPassphrase: values.keyPassphrase || undefined,
+        useAgent: values.type === 'SFTP' && values.useAgent ? true : undefined,
       })
     } finally {
       setConnectingId((current) => (current === draftId ? null : current))

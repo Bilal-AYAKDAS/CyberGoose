@@ -71,6 +71,7 @@ export function RemoteAccessModal({ initialMode, savedConnections, onOpenSsh, on
     setPort(mode === 'ssh' ? (found.type === 'SFTP' ? found.port : '22') : '3389')
     setUsername(found.username)
     setPassword('')
+    setKeyPath(found.type === 'SFTP' ? found.keyPath ?? '' : '')
   }
 
   const selectedProfile = serverProfiles.find((item) => item.id === selectedId)

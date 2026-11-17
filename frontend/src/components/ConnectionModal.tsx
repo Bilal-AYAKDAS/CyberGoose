@@ -42,6 +42,10 @@ export function ConnectionModal({ initial, onSave, onConnect, onClose }: Connect
     port: initial?.port ?? defaultPort(initial?.type ?? 'SFTP'),
     username: initial?.username ?? '',
     password: '',
+    keyPath: initial?.keyPath ?? '',
+    group: initial?.group ?? '',
+    useAgent: initial?.useAgent ?? false,
+    keyPassphrase: '',
   })
   const [errors, setErrors] = useState<FieldErrors>({})
   const [connectError, setConnectError] = useState<{ message: string; code?: string } | null>(null)
@@ -51,7 +55,7 @@ export function ConnectionModal({ initial, onSave, onConnect, onClose }: Connect
   const [isConnecting, setIsConnecting] = useState(false)
   const cloud = isCloud(values.type)
 
-  const update = (key: keyof ConnectionFormValues, value: string) => {
+  const update = (key: keyof ConnectionFormValues, value: string | boolean) => {
     setValues((current) => ({ ...current, [key]: value }))
     setErrors((current) => ({ ...current, [key]: undefined }))
     setConnectError(null)
@@ -76,7 +80,7 @@ export function ConnectionModal({ initial, onSave, onConnect, onClose }: Connect
       if (!values.host.trim()) next.host = 'Sunucu gerekli.'
       if (!/^\d+$/.test(values.port) || Number(values.port) < 1 || Number(values.port) > 65535) next.port = '1–65535'
       if (!values.username.trim()) next.username = 'Kullanıcı adı gerekli.'
-      const hasKey = values.type === 'SFTP' && Boolean(values.keyPath?.trim())
+      const hasKey = values.type === 'SFTP' && (Boolean(values.keyPath?.trim()) || Boolean(values.useAgent))
       if (forConnect && !values.password && !storedPassword && !hasKey) next.password = 'Bağlanmak için parolayı girin.'
     }
     setErrors(next)
@@ -177,6 +181,22 @@ export function ConnectionModal({ initial, onSave, onConnect, onClose }: Connect
                 {(id, describedBy) => <input id={id} aria-describedby={describedBy} className="cg-input mono" value={values.keyPath ?? ''} onChange={(event) => update('keyPath', event.target.value)} placeholder="C:\Users\...\id_ed25519" spellCheck={false} />}
               </Field>
             )}
+            {values.type === 'SFTP' && Boolean(values.keyPath?.trim()) && (
+              <Field label="Anahtar parolası (varsa)" wide>
+                {(id) => <input id={id} type="password" className="cg-input" value={values.keyPassphrase ?? ''} onChange={(event) => update('keyPassphrase', event.target.value)} autoComplete="off" placeholder={initial?.hasPassphrase ? 'Kayıtlı anahtar parolası kullanılacak' : undefined} />}
+              </Field>
+            )}
+            {values.type === 'SFTP' && (
+              <div className="cg-field wide">
+                <label className="cg-check-row">
+                  <input type="checkbox" className="cg-check" checked={Boolean(values.useAgent)} onChange={(event) => update('useAgent', event.target.checked)} />
+                  <span>SSH agent kullan (Pageant veya Windows OpenSSH agent)</span>
+                </label>
+              </div>
+            )}
+            <Field label="Grup (isteğe bağlı)" wide>
+              {(id) => <input id={id} className="cg-input" value={values.group ?? ''} onChange={(event) => update('group', event.target.value)} placeholder="Müşteriler/ACME" maxLength={60} />}
+            </Field>
             {values.type === 'FTP' && (
               <div className="wide">
                 <Notice title="Düz FTP şifrelenmez.">Parola ve dosyalar ağda açık metin olarak gider. Mümkünse SFTP kullanın.</Notice>

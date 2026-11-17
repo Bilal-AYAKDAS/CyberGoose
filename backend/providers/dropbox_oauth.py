@@ -1,8 +1,9 @@
 import json
 import os
+import secrets
 import threading
 import webbrowser
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import dropbox
 from dropbox.exceptions import AuthError, BadInputError
@@ -10,6 +11,7 @@ from flask import Flask, request
 import requests
 from werkzeug.serving import make_server
 
+from oauth_pages import PAGE_HEADERS, render_oauth_page
 from config import (
     DROPBOX_APP_KEY,
     DROPBOX_APP_SECRET,
@@ -30,12 +32,21 @@ class DropboxOperations:
         self.access_token = None
         self.refresh_token = None
         self.dbx = None
+        # OAuth "state": dönüş adresine başka bir sayfanın sahte kod göndermesini engeller.
+        self.state = secrets.token_urlsafe(24)
 
         @self.app.route('/oauth2/callback')
         def oauth2_callback():
+            def page(ok, message='', detail='', status=200):
+                return render_oauth_page('Dropbox', ok, message, detail), status, PAGE_HEADERS
+
+            if request.args.get('state') != self.state:
+                return page(False, 'İzin isteği doğrulanamadı. Bu bağlantı CyberGoose tarafından başlatılmamış olabilir.', status=400)
+            if request.args.get('error'):
+                return page(False, 'Dropbox izni verilmedi.', request.args.get('error_description') or request.args.get('error'), 400)
             code = request.args.get('code')
             if not code:
-                return "Dropbox izni alınamadı. CyberGoose'a dönüp tekrar deneyin.", 400
+                return page(False, 'Dropbox yetki kodu göndermedi.', status=400)
             token_url = 'https://api.dropboxapi.com/oauth2/token'
             data = {
                 'code': code,
@@ -44,8 +55,11 @@ class DropboxOperations:
                 'client_secret': self.APP_SECRET,
                 'redirect_uri': self.REDIRECT_URI,
             }
-            response = requests.post(token_url, data=data, timeout=15)
-            response_data = response.json()
+            try:
+                response = requests.post(token_url, data=data, timeout=15)
+                response_data = response.json()
+            except (requests.RequestException, ValueError) as exc:
+                return page(False, 'Dropbox erişim anahtarı alınamadı.', str(exc), 502)
             self.access_token = response_data.get('access_token')
             self.refresh_token = response_data.get('refresh_token')
 
@@ -54,8 +68,9 @@ class DropboxOperations:
                     json.dump({'access_token': self.access_token, 'refresh_token': self.refresh_token}, token_file)
                 self.dbx = self._client()
                 threading.Thread(target=self.stop_server, daemon=True).start()
-                return "Dropbox bağlantısı tamamlandı. Bu sekmeyi kapatıp CyberGoose'a dönebilirsiniz."
-            return "Dropbox izni alınamadı. CyberGoose'a dönüp tekrar deneyin.", 400
+                return page(True)
+            detail = response_data.get('error_description') or response_data.get('error') or ''
+            return page(False, 'Dropbox erişim anahtarı alınamadı.', str(detail), 400)
 
         if self._load_existing_token():
             return
@@ -101,12 +116,18 @@ class DropboxOperations:
             )
         return dropbox.Dropbox(self.access_token)
 
+    def authorize_url(self) -> str:
+        return "https://www.dropbox.com/oauth2/authorize?" + urlencode({
+            "client_id": self.APP_KEY,
+            "response_type": "code",
+            "redirect_uri": self.REDIRECT_URI,
+            "token_access_type": "offline",
+            "state": self.state,
+        })
+
     def get_access_token(self):
-        auth_url = (
-            f"https://www.dropbox.com/oauth2/authorize?"
-            f"client_id={self.APP_KEY}&response_type=code&redirect_uri={self.REDIRECT_URI}&token_access_type=offline"
-        )
-        webbrowser.open(auth_url)
+        """İzin sayfasını varsayılan tarayıcıda açar (sekme kapatıldıysa yeniden çağrılabilir)."""
+        webbrowser.open(self.authorize_url())
 
     def refresh_access_token(self):
         token_url = 'https://api.dropboxapi.com/oauth2/token'
@@ -129,7 +150,13 @@ class DropboxOperations:
         parsed = urlparse(self.REDIRECT_URI)
         host = parsed.hostname or 'localhost'
         port = parsed.port or 5000
-        self.server = make_server(host, port, self.app)
+        try:
+            self.server = make_server(host, port, self.app)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Dropbox izin dönüşü için {host}:{port} portu açılamadı; başka bir program kullanıyor olabilir. "
+                ".env içindeki DROPBOX_REDIRECT_URI portunu değiştirip Dropbox uygulamasına da ekleyin."
+            ) from exc
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def stop_server(self):

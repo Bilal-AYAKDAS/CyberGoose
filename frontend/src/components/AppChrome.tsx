@@ -58,6 +58,11 @@ type ToolbarProps = {
   showHidden: boolean
   query: string
   bookmarksOpen: boolean
+  /** Yerel ve uzak klasör açıkken karşılaştırma yapılabilir. */
+  canCompare?: boolean
+  onCompare?: () => void
+  /** Odaktaki panelde alt klasörlerle birlikte arama. */
+  onDeepSearch?: () => void
   onNewConnection: () => void
   onQuickConnect: () => void
   onUpload: () => void
@@ -95,12 +100,31 @@ export function Toolbar(props: ToolbarProps) {
       <span className="sep" />
       <button className="cg-btn cg-btn-icon cg-btn-ghost" aria-label="Gizli dosyaları göster" aria-pressed={showHidden} title={showHidden ? 'Gizli dosyaları sakla (Ctrl+H)' : 'Gizli dosyaları göster (Ctrl+H)'} onClick={props.onToggleHidden}><Icon name={showHidden ? 'eye' : 'eye-off'} /></button>
       <button className="cg-btn cg-btn-icon cg-btn-ghost" aria-label="Yer imleri" aria-pressed={bookmarksOpen} title="Yer imleri" onClick={props.onToggleBookmarks}><Icon name="bookmark" /></button>
+      {props.onCompare && (
+        <button className="cg-btn cg-btn-icon cg-btn-ghost" aria-label="Klasörleri karşılaştır" title="Yerel ve uzak klasörü karşılaştır / eşitle" disabled={!props.canCompare} onClick={props.onCompare}><Icon name="compare" /></button>
+      )}
       <button className="cg-btn cg-btn-icon cg-btn-ghost" aria-label="SSH terminali" aria-pressed={props.terminalOpen} title="SSH terminali" onClick={props.onOpenTerminal}><Icon name="terminal" /></button>
       <span className="grow" />
       <label className="cg-search">
         <Icon name="search" />
-        <input id="cg-search-input" aria-label="Bu klasörde ara" placeholder="Bu klasörde ara (Ctrl+F)" value={query} onChange={(event) => props.onQueryChange(event.target.value)} />
+        <input
+          id="cg-search-input"
+          aria-label="Bu klasörde ara"
+          placeholder="Bu klasörde ara (Ctrl+F)"
+          title="Enter: alt klasörlerde de ara"
+          value={query}
+          onChange={(event) => props.onQueryChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && query.trim() && props.onDeepSearch) {
+              event.preventDefault()
+              props.onDeepSearch()
+            }
+          }}
+        />
       </label>
+      {props.onDeepSearch && (
+        <button className="cg-btn cg-btn-ghost cg-btn-sm" aria-label="Alt klasörlerde ara" title="Alt klasörlerde de ara (Enter)" disabled={!query.trim()} onClick={props.onDeepSearch}>Alt klasörler</button>
+      )}
     </div>
   )
 }
@@ -111,10 +135,13 @@ type StatusBarProps = {
   selectedSize: number | null
   activeTransfer: string | null
   connection: ConnectionProfile | null
+  /** Harici düzenleyicide açık uzak dosya sayısı. */
+  editsCount?: number
+  onShowEdits?: () => void
 }
 
 /** Durum çubuğu (24px, bg-app, caption). Sayılar mono. */
-export function StatusBar({ itemCount, selectedCount, selectedSize, activeTransfer, connection }: StatusBarProps) {
+export function StatusBar({ itemCount, selectedCount, selectedSize, activeTransfer, connection, editsCount = 0, onShowEdits }: StatusBarProps) {
   const security = connection?.type === 'FTP' ? 'bağlı · şifresiz' : 'bağlı'
   return (
     <footer className="cg-statusbar">
@@ -123,6 +150,9 @@ export function StatusBar({ itemCount, selectedCount, selectedSize, activeTransf
         {selectedSize !== null && <> · <span className="cg-mono-xs">{formatFileSize(selectedSize)}</span></>}
       </span>
       <span className="grow" />
+      {editsCount > 0 && onShowEdits && (
+        <button className="cg-statusbar-btn" onClick={onShowEdits}>{editsCount} dosya düzenleniyor</button>
+      )}
       {activeTransfer && <span className="cg-statusbar-transfer">Aktarılıyor: {activeTransfer}</span>}
       <span>{connection ? `${protocolLabel(connection.type)} · ${security}` : 'Bağlı değil'}</span>
     </footer>

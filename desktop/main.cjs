@@ -1,7 +1,9 @@
-const { app, BrowserWindow, ipcMain, Menu, nativeTheme, Notification, shell, Tray } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, nativeTheme, net, Notification, shell, Tray } = require('electron');
 const { execFile } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 const { startBackend } = require('./backend.cjs');
+const { checkForUpdate } = require('./updater.cjs');
 
 const isDevelopment = Boolean(process.env.ELECTRON_RENDERER_URL);
 const isMac = process.platform === 'darwin';
@@ -41,6 +43,8 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Dosya detaylarındaki PDF önizlemesi için Chromium PDF görüntüleyicisi.
+      plugins: true,
     },
   });
 
@@ -51,6 +55,11 @@ function createWindow() {
   // uygulama yalnızca kendi sayfasını gösterir.
   window.webContents.on('will-navigate', (event, url) => {
     if (url !== window.webContents.getURL()) event.preventDefault();
+  });
+  // Uygulama içinden yeni Electron penceresi açılmaz; https linkleri varsayılan tarayıcıya gider.
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('https://')) shell.openExternal(url).catch(() => {});
+    return { action: 'deny' };
   });
 
   if (isDevelopment) {
@@ -116,11 +125,36 @@ ipcMain.handle('cybergoose:launch-rdp', async (_event, host, port) => {
   execFile('mstsc.exe', [`/v:${target}`], { windowsHide: false }, () => {});
 });
 
+// Yerel dosyayı varsayılan uygulamayla açar ya da Gezgin'de gösterir. Yalnızca var olan mutlak
+// yollar kabul edilir; renderer bir URL ya da komut veremez.
+function existingLocalPath(target) {
+  const value = String(target || '');
+  if (!path.isAbsolute(value) || !fs.existsSync(value)) throw new Error('Dosya bulunamadı');
+  return path.normalize(value);
+}
+
+ipcMain.handle('cybergoose:open-path', async (_event, target) => {
+  const message = await shell.openPath(existingLocalPath(target));
+  if (message) throw new Error(`Dosya açılamadı: ${message}`);
+});
+
+ipcMain.handle('cybergoose:show-item', async (_event, target) => {
+  shell.showItemInFolder(existingLocalPath(target));
+});
+
 ipcMain.on('cybergoose:notify', (_event, title, body) => {
   if (Notification.isSupported()) {
     new Notification({ title: String(title || 'CyberGoose'), body: String(body || '') }).show();
   }
 });
+
+// Güncelleme denetimi: GitHub'daki son sürüm bilgisi. Taşınabilir sürümde
+// PORTABLE_EXECUTABLE_FILE tanımlıdır; ona göre doğru paket seçilir.
+ipcMain.handle('cybergoose:check-update', () => checkForUpdate({
+  currentVersion: app.getVersion(),
+  portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE),
+  fetchImpl: (url, init) => net.fetch(url, init),
+}));
 
 // Yerel API tek sefer başlatılır; renderer `cyberGoose.backend()` ile bekler.
 let backendPromise = null;
@@ -144,7 +178,22 @@ function ensureBackend() {
 
 ipcMain.handle('cybergoose:backend', () => ensureBackend());
 
+// Tek örnek: ikinci kez açılınca ikinci bir yerel sunucu (aynı veritabanı ve token dosyaları)
+// başlatılmaz; mevcut pencere öne getirilir.
+const hasLock = app.requestSingleInstanceLock();
+if (!hasLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
+
 app.whenReady().then(() => {
+  if (!hasLock) return;
   ensureBackend().catch(() => {});
   mainWindow = createWindow();
   setupTray();

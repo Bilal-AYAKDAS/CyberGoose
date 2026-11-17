@@ -48,7 +48,8 @@ class _ConfirmHostKeyPolicy(paramiko.MissingHostKeyPolicy):
 class SFTPOperations:
     """SFTP bağlantısı. Dosya işlemleri file_service.py içindedir."""
 
-    def __init__(self, hostname, port, username, password=None, timeout=20, key_filename=None, trusted_fingerprint=None):
+    def __init__(self, hostname, port, username, password=None, timeout=20, key_filename=None, trusted_fingerprint=None,
+                 passphrase=None, use_agent=False):
         self.hostname = hostname
         self.port = port
         self.username = username
@@ -64,10 +65,12 @@ class SFTPOperations:
                 username,
                 password=password,
                 key_filename=key_filename,
+                passphrase=passphrase or None,
                 timeout=timeout,
                 banner_timeout=timeout,
                 auth_timeout=timeout,
-                allow_agent=key_filename is None and password is None,
+                # Pageant (Windows) ya da OpenSSH agent: açıkça seçildiyse veya başka kimlik yoksa.
+                allow_agent=use_agent or (key_filename is None and password is None),
                 look_for_keys=key_filename is not None,
             )
             transport = self.client.get_transport()

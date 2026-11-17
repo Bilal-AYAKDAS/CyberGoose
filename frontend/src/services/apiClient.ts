@@ -90,6 +90,29 @@ export async function apiRequest<T>(
   return payload as T
 }
 
+/** Görsel/PDF önizlemesi: ham baytları Blob olarak döndürür. */
+export async function previewBlob(side: 'local' | 'remote', path: string, sessionId?: number | null): Promise<Blob> {
+  let response: Response
+  try {
+    response = await fetch(`${apiBase()}/api/${side}/preview`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(runtime?.token ? { 'X-CyberGoose-Token': runtime.token } : {}),
+      },
+      body: JSON.stringify(side === 'remote' ? { path, sessionId } : { path }),
+    })
+  } catch {
+    throw new ApiError('CyberGoose yerel sunucusuna ulaşılamadı.', 0, 'offline')
+  }
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const message = payload?.error ?? `Önizleme alınamadı (${response.status})`
+    throw new ApiError(String(message), response.status, typeof payload?.code === 'string' ? payload.code : undefined)
+  }
+  return response.blob()
+}
+
 const post = <T>(path: string, data: unknown = {}) =>
   apiRequest<T>(path, { method: 'POST', body: JSON.stringify(data) })
 
@@ -106,6 +129,10 @@ export type ConnectRequest = {
   clientId?: string
   /** Kullanıcının onayladığı SFTP sunucu anahtarı parmak izi. */
   trustHostKey?: string
+  /** Özel anahtar parolası. */
+  keyPassphrase?: string
+  /** SSH agent (Pageant / OpenSSH) kullan. */
+  useAgent?: boolean
 }
 
 export type ConnectResponse =
@@ -120,6 +147,7 @@ export type TransferRequest = {
   localDir: string
   remoteDir: string
   overwrite?: boolean
+  conflict?: 'overwrite' | 'skip' | 'newer' | 'rename'
   sessionId?: number
   resume?: boolean
 }
@@ -132,7 +160,7 @@ export type TransferJobStatus = {
   total: number | null
   error?: string | null
   errorCode?: string | null
-  result?: { name: string; size: number; to: string; resumedFrom?: number } | null
+  result?: { name: string; size: number; to: string; resumedFrom?: number; skipped?: boolean; skipReason?: string; renamedTo?: string | null } | null
 }
 
 export type RemoteText = { path: string; content: string; encoding?: string; newline?: '\n' | '\r\n' }
@@ -147,9 +175,37 @@ export type SheetData = {
 }
 export type LocalStat = { name: string; path: string; parent: string; kind: 'file' | 'folder'; size: number | null; modified: string | null }
 export type ProviderStatus = { dropbox: boolean; googledrive: boolean; onedrive: boolean }
-export type FolderPlan = { rootName: string; files: { relativeDir: string; name: string; size: number | null }[] }
+export type FolderPlan = { rootName: string; files: { relativeDir: string; name: string; size: number | null; modified?: string | null }[] }
 
-export type ConnectionInput = { name: string; type: ConnectionType; host: string; port: string; username: string; password?: string }
+export type CompareStatus = 'onlyLocal' | 'onlyRemote' | 'different' | 'same'
+export type CompareRow = {
+  relativeDir: string
+  name: string
+  status: CompareStatus
+  localSize: number | null
+  remoteSize: number | null
+  localModified: string | null
+  remoteModified: string | null
+  newer: 'local' | 'remote' | null
+}
+export type CompareResult = { items: CompareRow[]; summary: Record<CompareStatus, number>; localPath: string; remotePath: string }
+
+export type ExternalEdit = {
+  id: string
+  sessionId: number
+  remotePath: string
+  localPath: string
+  name: string
+  uploads: number
+  lastUpload: number | null
+  error: string | null
+  uploading: boolean
+}
+
+export type SearchHit = { name: string; kind: 'file' | 'folder'; path: string; parent: string; size: number | null; modified: string | null }
+export type SearchResult = { results: SearchHit[]; truncated: boolean; scanned: number }
+
+export type ConnectionInput = { name: string; type: ConnectionType; host: string; port: string; username: string; password?: string; keyPath?: string; group?: string; useAgent?: boolean; keyPassphrase?: string }
 
 export const api = {
   session: () => apiRequest<SessionInfo>('/api/session'),
@@ -188,6 +244,17 @@ export const api = {
   cancelTransfer: (jobId: string) => post<TransferJobStatus>(`/api/transfers/${encodeURIComponent(jobId)}/cancel`),
   planFolderTransfer: (side: 'local' | 'remote', path: string, sessionId?: number) =>
     post<FolderPlan>('/api/transfer/plan', { side, path, sessionId }),
+  listExternalEdits: () => apiRequest<ExternalEdit[]>('/api/external-edits'),
+  openExternalEdit: (path: string, sessionId?: number) => post<ExternalEdit>('/api/external-edits', { path, sessionId }),
+  syncExternalEdit: (id: string) => post<ExternalEdit>(`/api/external-edits/${encodeURIComponent(id)}/sync`),
+  closeExternalEdit: (id: string) =>
+    apiRequest<{ closed: string }>(`/api/external-edits/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  extractZip: (path: string) =>
+    post<{ path: string; name: string; files: number; skipped: number }>('/api/extract', { side: 'local', path }),
+  compareFolders: (localPath: string, remotePath: string, sessionId?: number) =>
+    post<CompareResult>('/api/compare', { localPath, remotePath, sessionId }),
+  search: (side: 'local' | 'remote', path: string, query: string, sessionId?: number) =>
+    post<SearchResult>('/api/search', { side, path, query, sessionId }),
   createZip: (parentDir: string, names: string[], name: string) =>
     post<{ name: string; path: string; size: number }>('/api/archive', { side: 'local', parentDir, names, name }),
   mkdir: (side: 'local' | 'remote', path: string, name: string, sessionId?: number) =>
@@ -201,6 +268,8 @@ export const api = {
   createConnection: (input: ConnectionInput) => post<SavedConnection & { warning?: string }>('/api/connections', input),
   updateConnection: (id: string, input: ConnectionInput) =>
     apiRequest<SavedConnection & { warning?: string }>(`/api/connections/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(input) }),
+  importFileZilla: (xml: string) =>
+    post<{ imported: number; skipped: string[]; warnings: string[] }>('/api/connections/import/filezilla', { xml }),
   deleteConnection: (id: string) =>
     apiRequest<{ deleted: number }>(`/api/connections/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 

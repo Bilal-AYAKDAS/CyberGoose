@@ -64,10 +64,13 @@ class TerminalManager:
         cols: int = 80,
         rows: int = 24,
         trusted_fingerprint: str | None = None,
+        passphrase: str | None = None,
+        use_agent: bool = False,
     ) -> TerminalSession:
         cols, rows = clamp_size(cols, rows)
         conn = self._sessions.connect_server(
             "SFTP", host, port, username, password, key_path=key_path, trusted_fingerprint=trusted_fingerprint,
+            passphrase=passphrase, use_agent=use_agent,
         )
         try:
             channel = conn.client.invoke_shell(term="xterm-256color", width=cols, height=rows)

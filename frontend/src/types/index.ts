@@ -56,6 +56,14 @@ export type SavedConnection = {
   port: string
   username: string
   hasPassword: boolean
+  /** SFTP özel anahtar dosyasının yolu (boş: yok). */
+  keyPath?: string
+  /** Kenar çubuğundaki grup ("Müşteriler/ACME"); boş: grupsuz. */
+  group?: string
+  /** SFTP: SSH agent (Pageant / OpenSSH) ile kimlik doğrulama. */
+  useAgent?: boolean
+  /** Özel anahtarın parolası güvenli depoda kayıtlı mı. */
+  hasPassphrase?: boolean
 }
 
 export type ConnectionProfile = {
@@ -67,6 +75,12 @@ export type ConnectionProfile = {
   port: string
   username: string
   hasPassword: boolean
+  /** Kayıtlı SFTP özel anahtar yolu; varsa bağlanırken parola sorulmaz. */
+  keyPath?: string
+  /** Kenar çubuğu grubu. */
+  group?: string
+  useAgent?: boolean
+  hasPassphrase?: boolean
   /** Kayıtlı (silinebilir/düzenlenebilir) mi, yerleşik bulut girişi mi. */
   saved: boolean
   /** Bulut hesabı için uygulama anahtarları ayarlanmış mı (ayarsızsa kenar çubuğunda soluk). */
@@ -82,6 +96,9 @@ export type FolderBookmark = {
   connectionId: string | number | null
   path: string
 }
+
+/** Hedefte aynı adlı dosya varsa: sor (hata), üzerine yaz, atla, kaynak daha yeniyse yaz, yeni adla kaydet. */
+export type ConflictPolicy = 'ask' | 'overwrite' | 'skip' | 'newer' | 'rename'
 
 export type TransferStatus = 'queued' | 'transferring' | 'completed' | 'error' | 'cancelled'
 
@@ -104,6 +121,12 @@ export type TransferItem = {
   jobId?: string
   transferred?: number
   overwrite?: boolean
+  /** Çakışma kararı; yoksa `overwrite` geçerlidir. */
+  conflict?: ConflictPolicy
+  /** Hedefte vardı ve çakışma kararı gereği aktarılmadı. */
+  skipped?: string
+  /** "Yeniden adlandır" kararıyla hedefe verilen ad. */
+  renamedTo?: string
   /** Yarım kalan aktarımı kaldığı yerden sürdür (FTP/SFTP). */
   resume?: boolean
   error?: string
@@ -111,6 +134,8 @@ export type TransferItem = {
   errorCode?: string
   startedAt?: number
   finishedAt?: number
+  /** Anlık hız (bayt/sn, yumuşatılmış); yalnızca aktarılırken. */
+  rate?: number
 }
 
 export type PaneId = 'local' | 'remote'
@@ -119,4 +144,6 @@ export type ConnectionFormValues = Omit<ConnectionProfile, 'id' | 'hasPassword' 
   /** Parola yalnızca bağlantı isteğinde kullanılır, saklanmaz. */
   password: string
   keyPath?: string
+  /** Özel anahtar parolası (yalnızca güvenli depoya yazılır). */
+  keyPassphrase?: string
 }

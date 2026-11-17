@@ -108,7 +108,7 @@ Dosya girdisi: `{name, kind: file|folder, size, modified, path, hidden}`. `hidde
 
 ### Veritabanı
 
-SQLite şeması `PRAGMA user_version` ile sürümlenir (şu an 2). Sürüm 1'deki `BOOKMARKS` tablosu `CONNECTIONS` tablosuna kimlikleri korunarak taşınır. Parolalar keyring'de `CyberGoose` servis adı ve bağlantı kimliğiyle saklanır.
+SQLite şeması `PRAGMA user_version` ile sürümlenir (şu an 3). Sürüm 1'deki `BOOKMARKS` tablosu `CONNECTIONS` tablosuna kimlikleri korunarak taşınır. Sürüm 3, SFTP bağlantılarına `KEY_PATH` (özel anahtar dosyasının yolu, dosyanın kendisi değil) ekler. Parolalar keyring'de `CyberGoose` servis adı ve bağlantı kimliğiyle saklanır.
 
 ### Yapılandırma ve veri klasörü
 

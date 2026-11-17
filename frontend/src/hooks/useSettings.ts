@@ -1,17 +1,20 @@
 import { useEffect, useState } from 'react'
+import type { ConflictPolicy } from '../types'
 
 export type AppSettings = {
   density: 'comfortable' | 'compact'
-  overwriteDefault: 'ask' | 'overwrite'
+  overwriteDefault: ConflictPolicy
   notifications: boolean
   /** Nokta ile başlayan ve Windows'ta gizli öznitelikli öğeleri göster. */
   showHidden: boolean
   /** Aynı anda çalışan aktarım sayısı (1-4). */
   maxParallel: number
+  /** Açılışta GitHub'da yeni sürüm denetle. */
+  checkUpdates: boolean
 }
 
 const STORAGE_KEY = 'cybergoose-settings'
-export const defaultSettings: AppSettings = { density: 'comfortable', overwriteDefault: 'ask', notifications: true, showHidden: false, maxParallel: 2 }
+export const defaultSettings: AppSettings = { density: 'comfortable', overwriteDefault: 'ask', notifications: true, showHidden: false, maxParallel: 2, checkUpdates: true }
 
 function readSettings(): AppSettings {
   try {
@@ -21,9 +24,10 @@ function readSettings(): AppSettings {
     const parallel = Number(parsed.maxParallel)
     return {
       density: parsed.density === 'compact' ? 'compact' : 'comfortable',
-      overwriteDefault: parsed.overwriteDefault === 'overwrite' ? 'overwrite' : 'ask',
+      overwriteDefault: (['overwrite', 'skip', 'newer', 'rename'] as const).find((value) => value === parsed.overwriteDefault) ?? 'ask',
       notifications: parsed.notifications ?? true,
       showHidden: parsed.showHidden === true,
+      checkUpdates: parsed.checkUpdates !== false,
       maxParallel: Number.isInteger(parallel) && parallel >= 1 && parallel <= 4 ? parallel : defaultSettings.maxParallel,
     }
   } catch {

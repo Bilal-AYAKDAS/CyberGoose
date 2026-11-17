@@ -79,6 +79,31 @@ describe('CyberGoose application window', () => {
     expect(screen.getByRole('button', { name: 'İndir' })).toHaveClass('cg-btn-primary')
   })
 
+  it('connects a saved SFTP server with its stored key without asking for a password', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(api, 'listConnections').mockResolvedValue([
+      { id: 9, name: 'Anahtarlı', type: 'SFTP', host: 'web-01', port: '22', username: 'deploy', hasPassword: false, keyPath: 'C:/Users/bilal/.ssh/id_ed25519' },
+    ])
+    const connect = vi.spyOn(api, 'connect').mockResolvedValue({ connected: true, type: 'SFTP', sessionId: 2 })
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /Anahtarlı/ }))
+    expect(connect).toHaveBeenCalledWith(expect.objectContaining({ type: 'SFTP', connectionId: '9' }))
+    expect(screen.queryByRole('dialog', { name: /bağlantı/i })).not.toBeInTheDocument()
+  })
+
+  it('opens the connection dialog when the stored key needs a passphrase', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(api, 'listConnections').mockResolvedValue([
+      { id: 9, name: 'Şifreli', type: 'SFTP', host: 'web-01', port: '22', username: 'deploy', hasPassword: false, keyPath: 'C:/k/id' },
+    ])
+    vi.spyOn(api, 'connect').mockRejectedValue(new ApiError('web-01 bağlantısı kurulamadı: özel anahtar parola korumalı. Anahtar parolasını girin.', 401, 'key_passphrase_required'))
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /Şifreli/ }))
+    expect(await screen.findByRole('dialog', { name: 'Bağlantıyı düzenle' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Anahtar parolası (varsa)')).toBeInTheDocument()
+    expect(screen.getByText(/özel anahtar parola korumalı/)).toBeInTheDocument()
+  })
+
   it('shows the backend error when a connection fails', async () => {
     const user = userEvent.setup()
     vi.spyOn(api, 'connect').mockRejectedValue(new ApiError('Kimlik doğrulama başarısız', 401, 'auth_failed'))

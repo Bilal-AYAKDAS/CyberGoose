@@ -23,6 +23,7 @@ function setup(sessionId: number, maxParallel = 2) {
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  window.localStorage.clear()
 })
 
 describe('useTransferQueue', () => {

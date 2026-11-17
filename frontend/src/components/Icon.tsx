@@ -32,6 +32,7 @@ const paths = {
   'eye-off': 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12ZM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM4 4l16 16',
   'folder-plus': 'M3 6v12a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V9a1 1 0 0 0-1-1h-8.6L9.7 5.3A1 1 0 0 0 9 5H4a1 1 0 0 0-1 1ZM12 11v5M9.5 13.5h5',
   sliders: 'M4 6h9m4 0h3M4 12h3m4 0h9M4 18h11m4 0h1M15 4v4M9 10v4M17 16v4',
+  compare: 'M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h5M14 4h5a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-5M12 2v20',
 } as const
 
 export type IconName = keyof typeof paths

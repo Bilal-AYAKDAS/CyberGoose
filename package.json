@@ -20,7 +20,8 @@
     "lint": "npm --prefix frontend run lint",
     "test:frontend": "npm --prefix frontend run test:unit",
     "test:backend": "node scripts/python.cjs run -m pytest backend/tests -q",
-    "test": "npm run test:frontend && npm run test:backend"
+    "test:desktop": "node --test desktop/tests/updater.test.cjs",
+    "test": "npm run test:frontend && npm run test:backend && npm run test:desktop"
   },
   "build": {
     "appId": "com.cybergoose.app",
@@ -32,6 +33,7 @@
     },
     "files": [
       "desktop/**/*",
+      "!desktop/tests/**",
       "frontend/dist/**/*",
       "package.json"
     ],

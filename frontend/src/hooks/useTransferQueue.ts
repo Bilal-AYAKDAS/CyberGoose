@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, api, type TransferJobStatus } from '../services/apiClient'
-import type { ConnectionProfile, FileEntry, TransferItem } from '../types'
+import type { ConflictPolicy, ConnectionProfile, FileEntry, TransferItem } from '../types'
 import { connectionLabel } from '../utils/formatters'
 
 const messageOf = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback)
@@ -17,7 +17,7 @@ type UseTransferQueueOptions = {
   activeConnection: ConnectionProfile | null
   /** Etkin backend oturumu; kuyruğa eklenen her öğe bu oturuma bağlanır (null: etkin oturum). */
   sessionId: number | null
-  overwriteDefault?: 'ask' | 'overwrite'
+  overwriteDefault?: ConflictPolicy
   notifications?: boolean
   /** Aynı anda çalışan en fazla aktarım. */
   maxParallel?: number
@@ -25,13 +25,15 @@ type UseTransferQueueOptions = {
   reloadRemote: () => void
 }
 
-function joinLocal(base: string, rel: string) {
+export type RelativeFile = { relativeDir: string; name: string; size: number | null }
+
+export function joinLocal(base: string, rel: string) {
   if (!rel) return base
   const sep = base.includes('\\') ? '\\' : '/'
   return `${base.replace(/[\\/]+$/, '')}${sep}${rel.split('/').join(sep)}`
 }
 
-function joinRemote(base: string, rel: string) {
+export function joinRemote(base: string, rel: string) {
   if (!rel) return base
   return base === '/' ? `/${rel}` : `${base.replace(/\/+$/, '')}/${rel}`
 }
@@ -62,7 +64,7 @@ export function useTransferQueue({
   reloadLocal,
   reloadRemote,
 }: UseTransferQueueOptions) {
-  const [transfers, setTransfers] = useState<TransferItem[]>([])
+  const [transfers, setTransfers] = useState<TransferItem[]>(loadQueue)
   const [queueOpen, setQueueOpen] = useState(true)
   /** Başlatılmış (çalışan) öğeler; StrictMode'da efekt iki kez çalışsa da iş bir kez başlar. */
   const inflight = useRef(new Set<string>())
@@ -81,7 +83,10 @@ export function useTransferQueue({
     setTransfers((items) => items.map((item) => item.id === id ? { ...item, ...(typeof changes === 'function' ? changes(item) : changes) } : item))
   }, [])
 
-  const makeItem = useCallback((name: string, direction: TransferItem['direction'], localDir: string, remoteDir: string, size: number | null, label: string, session: number | null, connectionId?: string): TransferItem => {
+  // Bitmemiş işler kaydedilir; uygulama kapanıp açılınca kuyruk kaybolmaz.
+  useEffect(() => { saveQueue(transfers) }, [transfers])
+
+  const makeItem = useCallback((name: string, direction: TransferItem['direction'], localDir: string, remoteDir: string, size: number | null, label: string, session: number | null, connectionId?: string, overwrite?: boolean): TransferItem => {
     const remoteLabel = `${label}:${remoteDir}`
     return {
       id: crypto.randomUUID(),
@@ -95,7 +100,8 @@ export function useTransferQueue({
       to: direction === 'upload' ? remoteLabel : localDir,
       size,
       transferred: 0,
-      overwrite: overwriteDefault === 'overwrite',
+      overwrite: overwrite ?? overwriteDefault === 'overwrite',
+      conflict: overwrite ? 'overwrite' : overwriteDefault === 'ask' ? undefined : overwriteDefault,
       status: 'queued',
     }
   }, [overwriteDefault])
@@ -153,6 +159,42 @@ export function useTransferQueue({
     return allItems.length
   }, [activeConnection, localPath, makeItem, remotePath, sessionId])
 
+  /**
+   * Göreli yollarıyla verilen dosyaları kuyruğa ekler (klasör eşitleme). Hedefte eksik alt
+   * klasörler önce oluşturulur. `overwrite` verilirse ayardaki çakışma kararının yerine geçer.
+   */
+  const enqueueRelative = useCallback(async (
+    items: RelativeFile[],
+    direction: TransferItem['direction'],
+    baseLocal: string,
+    baseRemote: string,
+    overwrite?: boolean,
+  ) => {
+    if (!activeConnection || !items.length) return 0
+    const session = sessionId
+    const label = connectionLabel(activeConnection)
+    const targetSide = direction === 'upload' ? 'remote' : 'local'
+    const created = new Set<string>([''])
+    const added: TransferItem[] = []
+    for (const item of items) {
+      if (item.relativeDir && !created.has(item.relativeDir)) {
+        let acc = ''
+        for (const part of item.relativeDir.split('/')) {
+          const parentRel = acc
+          acc = acc ? `${acc}/${part}` : part
+          if (created.has(acc)) continue
+          const parentAbs = direction === 'upload' ? joinRemote(baseRemote, parentRel) : joinLocal(baseLocal, parentRel)
+          await ensureFolder(targetSide, parentAbs, part, session)
+          created.add(acc)
+        }
+      }
+      added.push(makeItem(item.name, direction, joinLocal(baseLocal, item.relativeDir), joinRemote(baseRemote, item.relativeDir), item.size, label, session, activeConnection.id, overwrite))
+    }
+    setTransfers((current) => [...current, ...added])
+    setQueueOpen(true)
+    return added.length
+  }, [activeConnection, makeItem, sessionId])
+
   const enqueue = useCallback((entry: FileEntry, direction: TransferItem['direction']) => {
     enqueueMany([entry], direction)
   }, [enqueueMany])
@@ -160,6 +202,8 @@ export function useTransferQueue({
   /** İşi bitene kadar izler. Geçici hatada geri çekilir; iş kimliği hiçbir zaman kaybolmaz. */
   const follow = useCallback(async (item: TransferItem, jobId: string): Promise<TransferJobStatus> => {
     let failures = 0
+    let sample: { at: number; bytes: number } | null = null
+    let rate: number | undefined
     for (;;) {
       await sleep(failures ? Math.min(4000, POLL_INTERVAL_MS * 2 ** failures) : POLL_INTERVAL_MS)
       let latest: TransferJobStatus
@@ -179,13 +223,21 @@ export function useTransferQueue({
         void api.cancelTransfer(jobId).catch(() => undefined)
       }
       if (latest.status !== 'transferring') return latest
-      patch(item.id, (current) => ({ transferred: latest.transferred, size: latest.total ?? current.size }))
+      const now = Date.now()
+      if (sample && now > sample.at && latest.transferred >= sample.bytes) {
+        const instant = ((latest.transferred - sample.bytes) * 1000) / (now - sample.at)
+        // Üstel yumuşatma: hız göstergesi her yoklamada zıplamasın.
+        rate = rate === undefined ? instant : rate * 0.7 + instant * 0.3
+      }
+      sample = { at: now, bytes: latest.transferred }
+      const currentRate = rate
+      patch(item.id, (current) => ({ transferred: latest.transferred, size: latest.total ?? current.size, rate: currentRate }))
     }
   }, [patch])
 
   const run = useCallback(async (item: TransferItem) => {
     const startedAt = Date.now()
-    patch(item.id, { status: 'transferring', startedAt, transferred: item.jobId ? item.transferred : 0, error: undefined, errorCode: undefined })
+    patch(item.id, { status: 'transferring', startedAt, transferred: item.jobId ? item.transferred : 0, error: undefined, errorCode: undefined, rate: undefined, skipped: undefined, renamedTo: undefined })
     try {
       let jobId = item.jobId
       let started: TransferJobStatus | null = null
@@ -196,6 +248,7 @@ export function useTransferQueue({
           localDir: item.localDir,
           remoteDir: item.remoteDir,
           overwrite: item.overwrite,
+          conflict: item.conflict && item.conflict !== 'ask' ? item.conflict : undefined,
           sessionId: item.sessionId ?? undefined,
           resume: item.resume,
         })
@@ -206,7 +259,11 @@ export function useTransferQueue({
       const latest = started && started.status !== 'transferring' ? started : await follow(item, jobId)
       if (latest.status === 'completed') {
         const finalSize = latest.result?.size ?? latest.total ?? item.size
-        patch(item.id, { status: 'completed', size: finalSize, transferred: finalSize ?? undefined, finishedAt: Date.now(), jobId: undefined, resume: false })
+        patch(item.id, {
+          status: 'completed', size: finalSize, transferred: finalSize ?? undefined, finishedAt: Date.now(), jobId: undefined, resume: false, rate: undefined,
+          skipped: latest.result?.skipped ? latest.result.skipReason ?? 'Atlandı' : undefined,
+          renamedTo: latest.result?.renamedTo ?? undefined,
+        })
         if (item.direction === 'upload') reloaders.current.reloadRemote()
         else reloaders.current.reloadLocal()
       } else if (latest.status === 'cancelled') {
@@ -277,7 +334,7 @@ export function useTransferQueue({
     else cancelRequested.current.add(id) // İş henüz başlatılıyor; kimlik gelince iptal edilir.
   }, [patch, transfers])
 
-  const retryTransfer = useCallback((id: string, overwrite?: boolean) => {
+  const retryTransfer = useCallback((id: string, overwrite?: boolean, conflict?: ConflictPolicy) => {
     setTransfers((items) => items.map((item) => {
       if (item.id !== id) return item
       const keepJob = item.errorCode === 'poll_failed' && item.jobId
@@ -290,6 +347,7 @@ export function useTransferQueue({
         sessionId: rebind ? live.sessionId : item.sessionId,
         status: 'queued',
         overwrite: overwrite ?? item.overwrite,
+        conflict: conflict ?? (overwrite ? 'overwrite' : item.conflict),
         resume,
         jobId: keepJob ? item.jobId : undefined,
         error: undefined,
@@ -297,6 +355,20 @@ export function useTransferQueue({
       }
     }))
   }, [])
+
+  /** "Hedefte var" hatası alan tüm öğelere aynı kararı uygular (tümüne uygula). */
+  const resolveConflicts = useCallback((policy: Exclude<ConflictPolicy, 'ask'>) => {
+    for (const item of transfers) {
+      if (item.status === 'error' && item.errorCode === 'exists') retryTransfer(item.id, policy === 'overwrite', policy)
+    }
+  }, [retryTransfer, transfers])
+
+  /** Hatalı tüm öğeleri yeniden dener ("zaten var" hataları hariç: onlar çakışma kararı bekler). */
+  const retryAll = useCallback(() => {
+    for (const item of transfers) {
+      if (item.status === 'error' && item.errorCode !== 'exists') retryTransfer(item.id)
+    }
+  }, [retryTransfer, transfers])
 
   const removeTransfer = useCallback((id: string) => {
     setTransfers((items) => {
@@ -321,8 +393,11 @@ export function useTransferQueue({
     enqueue,
     enqueueMany,
     enqueueFolders,
+    enqueueRelative,
     cancelTransfer,
     retryTransfer,
+    retryAll,
+    resolveConflicts,
     removeTransfer,
     clearFinished,
   }
@@ -336,4 +411,34 @@ export function parentOf(path: string): string | null {
   // "C:" → "C:\", "" → "/"
   if (/^[A-Za-z]:$/.test(parent)) return `${parent}\\`
   return parent || '/'
+}
+
+export const QUEUE_STORAGE_KEY = 'cybergoose-queue'
+const INTERRUPTED = 'Uygulama kapandığında aktarım yarım kaldı. Bağlantıyı açıp "Yeniden dene"ye basın; FTP/SFTP\'de kaldığı yerden sürer.'
+
+/** Kayıtlı kuyruğu okur. Kapanışta sürmekte ya da sırada olan işler "yarım kaldı" hatasına döner. */
+export function loadQueue(): TransferItem[] {
+  try {
+    const raw = window.localStorage.getItem(QUEUE_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as TransferItem[]
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((item) => item && typeof item.id === 'string' && typeof item.name === 'string')
+      .map((item) => (item.status === 'queued' || item.status === 'transferring' || (item.status === 'error' && item.jobId)
+        ? { ...item, status: 'error' as const, error: INTERRUPTED, errorCode: 'session_closed', jobId: undefined, rate: undefined }
+        : { ...item, rate: undefined }))
+  } catch {
+    return []
+  }
+}
+
+export function saveQueue(items: TransferItem[]) {
+  try {
+    const pending = items.filter((item) => item.status !== 'completed' && item.status !== 'cancelled')
+    if (pending.length) window.localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(pending))
+    else window.localStorage.removeItem(QUEUE_STORAGE_KEY)
+  } catch {
+    // Depolama kapalıysa kuyruk yalnızca bu oturumda kalır.
+  }
 }

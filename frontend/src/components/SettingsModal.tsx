@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import type { ThemePreference } from '../hooks/useTheme'
 import type { AppSettings } from '../hooks/useSettings'
+import type { UpdateState } from '../hooks/useUpdateCheck'
 import { Modal } from './Modal'
 
 type SettingsModalProps = {
@@ -9,6 +10,8 @@ type SettingsModalProps = {
   settings: AppSettings
   onChange: (next: AppSettings) => void
   onClose: () => void
+  /** Güncelleme denetimi; yalnızca masaüstü uygulamasında verilir. */
+  update?: { state: UpdateState; onCheck: () => void; onDownload: (url: string) => void }
 }
 
 function Segmented<T extends string | number>({ label, value, options, onChange }: {
@@ -48,7 +51,31 @@ function Check({ checked, onChange, children }: { checked: boolean; onChange: (v
   )
 }
 
-export function SettingsModal({ themePreference, onThemeChange, settings, onChange, onClose }: SettingsModalProps) {
+function UpdateSection({ update }: { update: NonNullable<SettingsModalProps['update']> }) {
+  const { state, onCheck, onDownload } = update
+  const info = state.info
+  return (
+    <div className="cg-field wide">
+      <span className="cg-field-label">Güncellemeler</span>
+      <div className="cg-inline">
+        <button className="cg-btn" disabled={state.status === 'checking'} onClick={onCheck}>
+          {state.status === 'checking' ? 'Denetleniyor…' : 'Güncellemeleri denetle'}
+        </button>
+        {info?.available && info.url && (
+          <button className="cg-btn cg-btn-primary" onClick={() => onDownload(info.url)}>{info.latest} sürümünü indir</button>
+        )}
+      </div>
+      {state.status === 'error' && <span className="cg-help error" role="alert">{state.error}</span>}
+      {state.status !== 'error' && info && (
+        <span className="cg-help">
+          {info.available ? `Yeni sürüm var: ${info.latest} (kurulu: ${info.current})` : `CyberGoose güncel (${info.current}).`}
+        </span>
+      )}
+    </div>
+  )
+}
+
+export function SettingsModal({ themePreference, onThemeChange, settings, onChange, onClose, update }: SettingsModalProps) {
   return (
     <Modal
       title="Ayarlar"
@@ -75,7 +102,13 @@ export function SettingsModal({ themePreference, onThemeChange, settings, onChan
         <Segmented
           label="Hedef dosya çakışması"
           value={settings.overwriteDefault}
-          options={[{ value: 'ask', label: 'Her zaman sor' }, { value: 'overwrite', label: 'Üzerine yaz' }]}
+          options={[
+            { value: 'ask', label: 'Sor' },
+            { value: 'overwrite', label: 'Üzerine yaz' },
+            { value: 'newer', label: 'Daha yeniyse' },
+            { value: 'skip', label: 'Atla' },
+            { value: 'rename', label: 'Yeni adla' },
+          ]}
           onChange={(overwriteDefault) => onChange({ ...settings, overwriteDefault })}
         />
         <Segmented
@@ -90,6 +123,10 @@ export function SettingsModal({ themePreference, onThemeChange, settings, onChan
         <Check checked={settings.notifications} onChange={(notifications) => onChange({ ...settings, notifications })}>
           Aktarımlar bitince masaüstü bildirimi göster
         </Check>
+        <Check checked={settings.checkUpdates} onChange={(checkUpdates) => onChange({ ...settings, checkUpdates })}>
+          Açılışta yeni sürümü denetle
+        </Check>
+        {update && <UpdateSection update={update} />}
       </div>
     </Modal>
   )

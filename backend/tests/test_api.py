@@ -200,12 +200,12 @@ def test_google_drive_refresh_error_reauthenticates(tmp_path, monkeypatch):
             return '{"token": "fresh"}'
 
     class FakeFlow:
-        def run_local_server(self, port=0):
-            return FreshCreds()
+        pass
 
     monkeypatch.setattr(google_drive.Credentials, "from_authorized_user_file", lambda *_a, **_kw: StaleCreds())
     monkeypatch.setattr(google_drive.InstalledAppFlow, "from_client_secrets_file", lambda *_a, **_kw: FakeFlow())
     monkeypatch.setattr(google_drive, "build", lambda *_a, **_kw: "fake-drive-service")
+    monkeypatch.setattr(google_drive, "run_local_oauth", lambda _flow: FreshCreds())
 
     drive = google_drive.DriveService(client_secrets_file=str(secrets_file), token_file=str(token_file))
     assert drive.service == "fake-drive-service"

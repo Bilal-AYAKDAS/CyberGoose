@@ -5,6 +5,7 @@
 credentials.json
 token.json
 dropboxtoken.json
+onedrivetoken.json
 *.db
 *.cgpart
 
