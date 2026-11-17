@@ -45,6 +45,21 @@ GOOGLE_TOKEN_FILE = data_path(env("GOOGLE_TOKEN_FILE", "token.json"))
 ONEDRIVE_CLIENT_ID = env("ONEDRIVE_CLIENT_ID", "")
 ONEDRIVE_TOKEN_FILE = data_path(env("ONEDRIVE_TOKEN_FILE", "onedrivetoken.json"))
 
+
+def _port(value):
+    """Geçerli bir port ise sayı, boş/geçersizse None."""
+    try:
+        number = int(str(value or "").strip())
+    except ValueError:
+        return None
+    return number if 1 <= number <= 65535 else None
+
+
+# OneDrive yönlendirme adresi her zaman http://localhost:<port>. Boşsa port her seferinde rastgele
+# seçilir; Azure'da "Mobil ve masaüstü uygulamaları" platformundaki http://localhost bunu kabul eder.
+# Uygulama "Web" platformunda kayıtlıysa port sabit olmalı: ör. 8400 ve http://localhost:8400.
+ONEDRIVE_REDIRECT_PORT = _port(env("ONEDRIVE_REDIRECT_PORT", ""))
+
 FLASK_HOST = env("FLASK_HOST", "127.0.0.1")
 FLASK_PORT = int(env("FLASK_PORT", "5502"))
 FLASK_DEBUG = env("FLASK_DEBUG", "false").lower() == "true"

@@ -223,13 +223,15 @@ def test_google_workspace_file_download_returns_400(tmp_path, monkeypatch):
     monkeypatch.setattr(
         file_service,
         "_drive_find_file",
-        lambda _s, _f, _n: {"id": "doc-1", "mimeType": "application/vnd.google-apps.document"},
+        lambda _s, _f, _n: {"id": "form-1", "mimeType": "application/vnd.google-apps.form"},
     )
 
+    # Docs/Sheets/Slides dışa aktarılır (bkz. test_drive_export.py); Forms gibi türler indirilemez.
     with pytest.raises(file_service.FileServiceError) as exc:
-        file_service.download(FakeConn(), "/", "Notlar", str(tmp_path))
+        file_service.download(FakeConn(), "/", "Anket", str(tmp_path))
     assert exc.value.status == 400
     assert exc.value.code == "google_workspace_file"
+    assert "form" in exc.value.message
 
 
 def test_connection_password_stored_in_keyring_not_sqlite(client, monkeypatch):

@@ -7,7 +7,7 @@ import threading
 import msal
 import requests
 
-from config import ONEDRIVE_CLIENT_ID, ONEDRIVE_TOKEN_FILE
+from config import ONEDRIVE_CLIENT_ID, ONEDRIVE_REDIRECT_PORT, ONEDRIVE_TOKEN_FILE
 from oauth_pages import render_oauth_page
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
@@ -16,6 +16,17 @@ ONEDRIVE_SCOPES = ["Files.ReadWrite.All"]
 
 ONEDRIVE_SUCCESS_PAGE = render_oauth_page("OneDrive", True)
 ONEDRIVE_ERROR_PAGE = render_oauth_page("OneDrive", False, "OneDrive izni verilmedi.", "$error $error_description")
+
+REDIRECT_HINT = (
+    "Microsoft 'redirect_uri' hatası gösterdiyse Azure portalındaki uygulama kaydında "
+    "Kimlik doğrulama > Platform ekle > Mobil ve masaüstü uygulamaları altına http://localhost ekleyin "
+    "ve \"Genel istemci akışlarına izin ver\" seçeneğini açın."
+)
+
+
+def redirect_uri(port: int | None = ONEDRIVE_REDIRECT_PORT) -> str:
+    """MSAL'ın Microsoft'a gönderdiği yönlendirme adresi (portsuzsa her seferinde rastgele port)."""
+    return f"http://localhost:{port}" if port else "http://localhost (rastgele port)"
 
 
 class _RefreshingAuth(requests.auth.AuthBase):
@@ -37,11 +48,13 @@ class _RefreshingAuth(requests.auth.AuthBase):
 class OneDriveService:
     """MSAL ile etkileşimli/önbellekli OAuth oturumu ve Graph API HTTP oturumu."""
 
-    def __init__(self, client_id: str = ONEDRIVE_CLIENT_ID, token_file: str = ONEDRIVE_TOKEN_FILE):
+    def __init__(self, client_id: str = ONEDRIVE_CLIENT_ID, token_file: str = ONEDRIVE_TOKEN_FILE,
+                 redirect_port: int | None = ONEDRIVE_REDIRECT_PORT):
         if not client_id:
             raise ValueError("OneDrive için .env dosyasında ONEDRIVE_CLIENT_ID gerekli")
         self.client_id = client_id
         self.token_file = token_file
+        self.redirect_port = redirect_port
         self.cache = msal.SerializableTokenCache()
         if os.path.exists(self.token_file):
             try:
@@ -77,17 +90,24 @@ class OneDriveService:
         accounts = self.pca.get_accounts()
         if accounts:
             result = self.pca.acquire_token_silent(ONEDRIVE_SCOPES, account=accounts[0])
+        interactive = False
         if not result or "access_token" not in result:
+            interactive = True
+            options = {"port": self.redirect_port} if self.redirect_port else {}
             result = self.pca.acquire_token_interactive(
                 scopes=ONEDRIVE_SCOPES,
                 timeout=120,
                 # MSAL tarayıcıda gösterilecek sayfayı string.Template olarak alır ($error alanları kaçışlanır).
                 success_template=ONEDRIVE_SUCCESS_PAGE,
                 error_template=ONEDRIVE_ERROR_PAGE,
+                **options,
             )
         if not result or "access_token" not in result:
-            detail = result.get("error_description") if isinstance(result, dict) else "Bilinmeyen OAuth hatası"
-            raise RuntimeError(f"OneDrive yetkilendirmesi başarısız: {detail}")
+            detail = (result.get("error_description") or result.get("error")) if isinstance(result, dict) else None
+            message = f"OneDrive yetkilendirmesi başarısız: {detail or 'tarayıcıdan yanıt gelmedi'}"
+            if interactive and not (isinstance(result, dict) and result.get("error") == "access_denied"):
+                message += f" (yönlendirme adresi: {redirect_uri(self.redirect_port)}). {REDIRECT_HINT}"
+            raise RuntimeError(message)
         self._save_cache()
         self._token = result["access_token"]
         accounts = self.pca.get_accounts()

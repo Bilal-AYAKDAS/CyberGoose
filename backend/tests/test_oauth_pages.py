@@ -172,3 +172,60 @@ def test_dropbox_callback_shows_network_error(dropbox_app, monkeypatch):
     response = client.get(f"/oauth2/callback?state={ops.state}&code=abc")
     assert response.status_code == 502
     assert "ağ yok" in response.get_data(as_text=True)
+
+
+# ---------------------------------------------------------------- OneDrive yönlendirme adresi
+
+class _FakePCA:
+    def __init__(self, result):
+        self.result = result
+        self.kwargs = None
+
+    def get_accounts(self):
+        return []
+
+    def acquire_token_interactive(self, **kwargs):
+        self.kwargs = kwargs
+        return self.result
+
+
+def _onedrive(monkeypatch, tmp_path, result, port=None):
+    from providers import onedrive
+
+    fake = _FakePCA(result)
+    monkeypatch.setattr(onedrive.msal, "PublicClientApplication", lambda *a, **k: fake)
+    try:
+        service = onedrive.OneDriveService(client_id="abc", token_file=str(tmp_path / "t.json"), redirect_port=port)
+    except RuntimeError as exc:
+        return fake, exc
+    return fake, service
+
+
+def test_onedrive_uses_random_port_by_default(monkeypatch, tmp_path):
+    fake, service = _onedrive(monkeypatch, tmp_path, {"access_token": "t"})
+    assert "port" not in fake.kwargs
+    assert service.access_token  # bağlandı
+
+
+def test_onedrive_uses_fixed_port_when_configured(monkeypatch, tmp_path):
+    fake, _ = _onedrive(monkeypatch, tmp_path, {"access_token": "t"}, port=8400)
+    assert fake.kwargs["port"] == 8400
+
+
+def test_onedrive_failure_explains_redirect_registration(monkeypatch, tmp_path):
+    _, error = _onedrive(monkeypatch, tmp_path, {"error": "invalid_request"}, port=8400)
+    message = str(error)
+    assert "http://localhost:8400" in message
+    assert "Mobil ve masaüstü uygulamaları" in message
+
+
+def test_onedrive_denied_access_has_no_redirect_hint(monkeypatch, tmp_path):
+    _, error = _onedrive(monkeypatch, tmp_path, {"error": "access_denied", "error_description": "Kullanıcı reddetti"})
+    assert "Kullanıcı reddetti" in str(error) and "redirect_uri" not in str(error)
+
+
+def test_redirect_port_parsing():
+    from config import _port
+
+    assert _port("8400") == 8400
+    assert _port("") is None and _port("abc") is None and _port("70000") is None

@@ -227,7 +227,8 @@ class TransferManager:
                     finish("error", exc.message, exc.code)
                 except Exception as exc:
                     logger.exception("Aktarım beklenmedik şekilde başarısız oldu")
-                    finish("error", "Aktarım başarısız oldu", type(exc).__name__)
+                    detail = (str(exc) or type(exc).__name__)[:300]
+                    finish("error", f"Aktarım başarısız oldu: {detail}", type(exc).__name__)
 
         threading.Thread(target=run_job, daemon=True, name=f"transfer-{job.id[:8]}").start()
         return job
@@ -288,8 +289,10 @@ class TransferManager:
                     total = total or size
                     on_progress((total + done) // 2, total)
 
+                # Google belgesi dışa aktarıldıysa ya da ad yerelde değiştiyse geçici dosyanın adı farklıdır.
+                relay_name = Path(fetched["to"]).name
                 with self.pool.borrow(target) as conn:
-                    result = files.upload(conn, str(relay), name, target_dir, False,
+                    result = files.upload(conn, str(relay), relay_name, target_dir, False,
                                           progress_cb=second_half, cancel_event=cancel_event, conflict=policy)
                 return {**result, "from": source_file, "size": result.get("size") or size}
             finally:

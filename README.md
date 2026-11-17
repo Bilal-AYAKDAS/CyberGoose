@@ -51,7 +51,7 @@ Bulut hesapları için `backend/.env.example` dosyasını `backend/.env` olarak 
 
 - **Dropbox:** <https://www.dropbox.com/developers/apps> adresinde bir uygulama oluşturun. `DROPBOX_APP_KEY` ve `DROPBOX_APP_SECRET` değerlerini girin. Redirect URI olarak `http://localhost:5000/oauth2/callback` ekleyin.
 - **Google Drive:** Google Cloud Console'da "Masaüstü uygulaması" türünde bir OAuth istemcisi oluşturun. İndirdiğiniz dosyayı `backend/credentials.json` olarak kaydedin.
-- **OneDrive:** Azure portalında bir uygulama kaydı oluşturun ve `ONEDRIVE_CLIENT_ID` değerini girin.
+- **OneDrive:** Azure portalında bir uygulama kaydı oluşturun ve `ONEDRIVE_CLIENT_ID` değerini girin. Kayıtta *Kimlik doğrulama > Platform ekle > Mobil ve masaüstü uygulamaları* altına `http://localhost` yönlendirme adresini ekleyin ve *Genel istemci akışlarına izin ver* seçeneğini açın. Aksi halde Microsoft `redirect_uri` hatası verir.
 
 Ayarlanmamış bulut hesabı kenar çubuğunda soluk görünür; tıklayınca ne yapılacağı yazar.
 

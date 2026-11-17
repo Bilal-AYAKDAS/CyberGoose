@@ -55,6 +55,80 @@ GRAPH_DRIVE_ROOT = 'https://graph.microsoft.com/v1.0/me/drive'
 TRANSFER_CHUNK = 64 * 1024
 
 
+# Google Docs/Sheets/Slides/Drawings ikili dosya değildir; indirirken Office/PDF biçimine dışa aktarılır.
+DRIVE_EXPORTS = {
+    'application/vnd.google-apps.document': ('application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.docx'),
+    'application/vnd.google-apps.spreadsheet': ('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.xlsx'),
+    'application/vnd.google-apps.presentation': ('application/vnd.openxmlformats-officedocument.presentationml.presentation', '.pptx'),
+    'application/vnd.google-apps.drawing': ('application/pdf', '.pdf'),
+    'application/vnd.google-apps.jam': ('application/pdf', '.pdf'),
+}
+
+# Windows dosya adlarında kullanılamayan karakterler ve ayrılmış adlar.
+_WINDOWS_INVALID = set('<>:"/\\|?*') | {chr(code) for code in range(32)}
+_WINDOWS_RESERVED = {'CON', 'PRN', 'AUX', 'NUL', *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))}
+MAX_LOCAL_NAME = 200  # NTFS sınırı 255; .cgpart ve "(1)" ekleri için pay bırakılır.
+
+
+def safe_local_name(name: str, windows: bool | None = None) -> str:
+    """Uzak dosya adını yerelde yazılabilir hale getirir.
+
+    Windows'ta `: ? * " < > |` gibi karakterler `_` olur, sondaki nokta/boşluk silinir, CON/NUL gibi
+    ayrılmış adlar değiştirilir. Çok uzun adlar uzantı korunarak kısaltılır. Diğer sistemlerde yalnızca
+    uzunluk sınırlanır.
+    """
+    windows = os.name == 'nt' if windows is None else windows
+    clean = name
+    if windows:
+        clean = ''.join('_' if char in _WINDOWS_INVALID else char for char in clean).rstrip(' .')
+        stem = clean.split('.', 1)[0].upper()
+        if stem in _WINDOWS_RESERVED:
+            clean = f'_{clean}'
+    clean = clean or '_'
+    if len(clean) > MAX_LOCAL_NAME:
+        stem, ext = os.path.splitext(clean)
+        ext = ext if len(ext) <= 16 else ''
+        clean = stem[:MAX_LOCAL_NAME - len(ext)].rstrip(' .') + ext
+    return clean
+
+
+def _long_path(path: Path) -> Path:
+    """Windows'ta 260 karakteri aşan yollar için `\\\\?\\` önekli yol (uzun yol desteği kapalı olsa da çalışır)."""
+    if os.name != 'nt':
+        return path
+    text = str(path)
+    if len(text) < 240 or text.startswith('\\\\?\\'):
+        return path
+    absolute = os.path.abspath(text)
+    if absolute.startswith('\\\\'):
+        return Path('\\\\?\\UNC\\' + absolute[2:])
+    return Path('\\\\?\\' + absolute)
+
+
+def _plain_path(path: Path) -> str:
+    text = str(path)
+    if text.startswith('\\\\?\\UNC\\'):
+        return '\\\\' + text[8:]
+    return text[4:] if text.startswith('\\\\?\\') else text
+
+
+def _error_detail(error: Exception) -> str:
+    """Kullanıcıya gösterilecek kısa hata ayrıntısı (Google API hatalarında sebep metni)."""
+    content = getattr(error, 'content', None)
+    if content:
+        try:
+            import json
+            payload = json.loads(content.decode('utf-8') if isinstance(content, bytes) else content)
+            message = payload.get('error', {}).get('message')
+            if message:
+                return str(message)[:300]
+        except (ValueError, AttributeError):
+            pass
+    if isinstance(error, OSError) and error.strerror:
+        return error.strerror
+    return (str(error) or type(error).__name__)[:300]
+
+
 def _is_auth_error(error: Exception) -> bool:
     return type(error).__name__ in ('AuthError', 'RefreshError')
 
@@ -62,7 +136,7 @@ def _is_auth_error(error: Exception) -> bool:
 def _raise_provider_error(action: str, error: Exception) -> None:
     if _is_auth_error(error):
         raise FileServiceError('Oturum süresi doldu veya geçersiz. Yeniden bağlanın.', 401, 'auth_error') from error
-    raise FileServiceError(action, 502, type(error).__name__) from error
+    raise FileServiceError(f'{action}: {_error_detail(error)}', 502, type(error).__name__) from error
 
 
 def _iso(timestamp: float | None) -> str | None:
@@ -765,9 +839,35 @@ def download(
     target_dir = Path(local_dir)
     if not target_dir.is_dir():
         raise FileServiceError('Yerel hedef klasör bulunamadı', 404)
-    local_file = target_dir / name
     remote_dir = normalize_remote(remote_dir)
     remote_file = posixpath.join(remote_dir, name)
+    local_name = name
+    drive_file, export = None, None
+    if provider == 'drive':
+        try:
+            service = conn.service
+            drive_file = _drive_find_file(service, _drive_resolve_folder(service, remote_dir), name)
+        except FileServiceError:
+            raise
+        except Exception as error:
+            _raise_provider_error('Google Drive dosyası bulunamadı', error)
+        if not drive_file:
+            raise FileServiceError('Uzak dosya bulunamadı', 404)
+        mime = str(drive_file.get('mimeType') or '')
+        if mime.startswith(DRIVE_WORKSPACE_PREFIX):
+            export = DRIVE_EXPORTS.get(mime)
+            if export is None:
+                kind = mime.rsplit('.', 1)[-1]
+                raise FileServiceError(
+                    f'Bu Google dosya türü ({kind}) indirilemez; yalnızca Docs, Sheets, Slides ve Drawings dışa aktarılabilir.',
+                    400, 'google_workspace_file',
+                )
+            if not local_name.lower().endswith(export[1]):
+                local_name += export[1]
+    # Uzak adda Windows'ta geçersiz karakter olabilir (ör. "Rapor: 2026?"); yerel ad güvenli hale getirilir.
+    local_name = safe_local_name(local_name)
+    local_file = _long_path(target_dir / local_name)
+    target_dir = local_file.parent
     policy = _policy(conflict, overwrite)
     if local_file.exists():
         if policy == 'skip':
@@ -846,14 +946,13 @@ def download(
                         report(transferred, total_size)
         else:
             service = conn.service
-            found = _drive_find_file(service, _drive_resolve_folder(service, remote_dir), name)
-            if not found:
-                raise FileServiceError('Uzak dosya bulunamadı', 404)
-            if str(found.get('mimeType') or '').startswith(DRIVE_WORKSPACE_PREFIX):
-                raise FileServiceError('Google Workspace dosyaları (Docs/Sheets/Slides) doğrudan indirilemiyor.', 400, 'google_workspace_file')
             from googleapiclient.http import MediaIoBaseDownload
+            request = (
+                service.files().export_media(fileId=drive_file['id'], mimeType=export[0])
+                if export else service.files().get_media(fileId=drive_file['id'])
+            )
             with partial.open('wb') as handle:
-                downloader = MediaIoBaseDownload(handle, service.files().get_media(fileId=found['id']))
+                downloader = MediaIoBaseDownload(handle, request)
                 done = False
                 while not done:
                     _check_cancel(cancel_event)
@@ -870,12 +969,18 @@ def download(
     except PermissionError:
         _discard_partial(partial, resumable)
         raise FileServiceError('Yerel klasöre yazma izniniz yok', 403)
+    except OSError as error:
+        _discard_partial(partial, resumable)
+        if getattr(error, 'filename', None) is None:  # Ağ hatası (bağlantı koptu vb.)
+            _raise_provider_error('İndirme başarısız oldu', error)
+        raise FileServiceError(f'Yerel dosya yazılamadı: {_error_detail(error)} ({local_file.name})', 500, 'local_write_failed') from error
     except Exception as error:
         _discard_partial(partial, resumable)
         _raise_provider_error('İndirme başarısız oldu', error)
     return {
-        "name": name, "size": local_file.stat().st_size, "to": str(local_file), "resumedFrom": offset,
+        "name": name, "size": local_file.stat().st_size, "to": _plain_path(local_file), "resumedFrom": offset,
         "renamedTo": local_file.name if local_file.name != name else None,
+        **({"exportedAs": export[1].lstrip('.')} if export else {}),
     }
 
 
