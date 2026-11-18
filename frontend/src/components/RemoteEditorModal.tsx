@@ -5,6 +5,8 @@ import { Notice } from './Notice'
 
 type RemoteEditorModalProps = {
   side?: 'local' | 'remote'
+  /** Sol paneldeki ikinci uzak bağlantı; yoksa etkin oturum. */
+  sessionId?: number
   path: string
   name: string
   onSaved: () => void
@@ -21,7 +23,7 @@ const ENCODING_LABEL: Record<string, string> = {
  * Yerel ve uzak metin dosyası düzenleyici (256 KB'a kadar). Dosyanın karakter kodlaması ve satır sonu
  * (CRLF/LF) korunur: textarea her şeyi LF'ye çevirir, kaydederken backend özgün biçime döner.
  */
-export function RemoteEditorModal({ side = 'remote', path, name, onSaved, onClose }: RemoteEditorModalProps) {
+export function RemoteEditorModal({ side = 'remote', sessionId, path, name, onSaved, onClose }: RemoteEditorModalProps) {
   const [file, setFile] = useState<RemoteText | null>(null)
   const [content, setContent] = useState('')
   const [loading, setLoading] = useState(true)
@@ -32,7 +34,7 @@ export function RemoteEditorModal({ side = 'remote', path, name, onSaved, onClos
 
   useEffect(() => {
     let active = true
-    const read = side === 'local' ? api.readLocalText(path) : api.readRemoteText(path)
+    const read = side === 'local' ? api.readLocalText(path) : sessionId !== undefined ? api.readRemoteText(path, sessionId) : api.readRemoteText(path)
     read
       .then((res) => {
         if (!active) return
@@ -46,7 +48,7 @@ export function RemoteEditorModal({ side = 'remote', path, name, onSaved, onClos
         setLoading(false)
       })
     return () => { active = false }
-  }, [path, side])
+  }, [path, side, sessionId])
 
   const save = async () => {
     setSaving(true)
@@ -56,7 +58,7 @@ export function RemoteEditorModal({ side = 'remote', path, name, onSaved, onClos
       if (side === 'local') {
         await api.writeLocalText(path, content, options)
       } else {
-        await api.writeRemoteText(path, content, options)
+        await api.writeRemoteText(path, content, sessionId !== undefined ? { ...options, sessionId } : options)
       }
       onSaved()
       onClose()

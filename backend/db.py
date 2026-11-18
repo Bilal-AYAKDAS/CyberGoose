@@ -43,7 +43,7 @@ def _delete_secret(connection_id) -> None:
         pass
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class DbMyFtp:
@@ -143,6 +143,14 @@ class DbMyFtp:
                     PRAGMA user_version = 5;
                     """
                 )
+            if version < 6:
+                # Klasör karşılaştırmada kullanılan sunucu saat farkı (dakika); NULL = otomatik.
+                connection.executescript(
+                    """
+                    ALTER TABLE CONNECTIONS ADD COLUMN COMPARE_OFFSET INTEGER;
+                    PRAGMA user_version = 6;
+                    """
+                )
             # Keyring'e taşınamamış eski düz metin parolalar (ör. keyring o an erişilemezdi).
             legacy_rows = connection.execute(
                 "SELECT ID, PASSWORD FROM CONNECTIONS WHERE PASSWORD IS NOT NULL AND PASSWORD != ''"
@@ -157,7 +165,7 @@ class DbMyFtp:
     def list_connections(self):
         with self._connect() as connection:
             rows = connection.execute(
-                """SELECT ID, NAME, TYPE, HOST, PORT, USERNAME, PASSWORD IS NOT NULL AND PASSWORD != '', KEY_PATH, GROUP_NAME, USE_AGENT
+                """SELECT ID, NAME, TYPE, HOST, PORT, USERNAME, PASSWORD IS NOT NULL AND PASSWORD != '', KEY_PATH, GROUP_NAME, USE_AGENT, COMPARE_OFFSET
                    FROM CONNECTIONS ORDER BY COALESCE(GROUP_NAME, '') COLLATE NOCASE, NAME COLLATE NOCASE, ID"""
             ).fetchall()
         return [
@@ -173,6 +181,7 @@ class DbMyFtp:
                 "group": row[8] or "",
                 "useAgent": bool(row[9]),
                 "hasPassphrase": bool(row[7]) and bool(_get_secret(f"{row[0]}:passphrase")),
+                "compareOffset": row[10],
             }
             for row in rows
         ]
@@ -225,6 +234,13 @@ class DbMyFtp:
         elif updated and passphrase:
             saved = _set_secret(f"{connection_id}:passphrase", passphrase) and saved is not False
         return updated, saved
+
+    def set_compare_offset(self, connection_id, minutes):
+        """Karşılaştırma saat farkını kaydeder; None otomatik algılamaya döner."""
+        with self._connect() as connection:
+            cursor = connection.execute("UPDATE CONNECTIONS SET COMPARE_OFFSET = ? WHERE ID = ?", (minutes, connection_id))
+            connection.commit()
+            return cursor.rowcount > 0
 
     def find_connection(self, conn_type, host, port, username):
         """Aynı sunucu ve kullanıcıya ait kayıt (içe aktarmada çift kaydı önlemek için)."""

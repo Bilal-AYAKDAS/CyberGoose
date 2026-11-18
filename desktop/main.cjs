@@ -1,9 +1,9 @@
-const { app, BrowserWindow, ipcMain, Menu, nativeTheme, net, Notification, shell, Tray } = require('electron');
-const { execFile } = require('node:child_process');
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, Notification, shell, Tray } = require('electron');
+const { execFile, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { startBackend } = require('./backend.cjs');
-const { checkForUpdate } = require('./updater.cjs');
+const { buildSwapScript, checkForUpdate, checkUpdateSignature, downloadAsset, encodePowerShell, installMode, readSignature } = require('./updater.cjs');
 
 const isDevelopment = Boolean(process.env.ELECTRON_RENDERER_URL);
 const isMac = process.platform === 'darwin';
@@ -51,6 +51,23 @@ function createWindow() {
   // Pencere ilk çizim hazır olunca gösterilir; açılış ekranı (index.html) hemen görünür.
   window.once('ready-to-show', () => window.show());
 
+  // Aktarım sürerken pencere kapatılırsa backend de kapanır ve işler yarım kalır: önce sorulur.
+  window.on('close', (event) => {
+    if (quitConfirmed || activeTransfers <= 0) return;
+    const choice = dialog.showMessageBoxSync(window, {
+      type: 'warning',
+      buttons: ['Aktarımları bekle', 'Yine de çık'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: 'CyberGoose',
+      message: `${activeTransfers} aktarım sürüyor.`,
+      detail: 'Çıkarsanız aktarımlar yarıda kalır. FTP ve SFTP aktarımları sonra "Yeniden dene" ile kaldığı yerden sürdürülebilir.',
+    });
+    if (choice === 0) event.preventDefault();
+    else quitConfirmed = true;
+  });
+
   // Gezgin'den bırakılan dosya bir bırakma alanının dışına düşerse pencere o dosyaya gitmesin;
   // uygulama yalnızca kendi sayfasını gösterir.
   window.webContents.on('will-navigate', (event, url) => {
@@ -73,6 +90,21 @@ function createWindow() {
 
 let mainWindow = null;
 let tray = null;
+/** Renderer'ın bildirdiği süren aktarım sayısı; kapatırken uyarı için. */
+let activeTransfers = 0;
+let quitConfirmed = false;
+
+ipcMain.on('cybergoose:active-transfers', (_event, count) => {
+  const value = Number(count);
+  activeTransfers = Number.isInteger(value) && value > 0 ? value : 0;
+});
+
+ipcMain.on('cybergoose:taskbar-progress', (_event, fraction, mode) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const value = typeof fraction === 'number' && Number.isFinite(fraction) ? Math.min(1, Math.max(0, fraction)) : -1;
+  // -1 çubuğu kaldırır; Windows görev çubuğunda ve macOS Dock'ta görünür.
+  mainWindow.setProgressBar(value, { mode: value < 0 ? 'none' : mode === 'error' ? 'error' : 'normal' });
+});
 
 function setupTray() {
   if (tray) return;
@@ -149,12 +181,93 @@ ipcMain.on('cybergoose:notify', (_event, title, body) => {
 });
 
 // Güncelleme denetimi: GitHub'daki son sürüm bilgisi. Taşınabilir sürümde
-// PORTABLE_EXECUTABLE_FILE tanımlıdır; ona göre doğru paket seçilir.
-ipcMain.handle('cybergoose:check-update', () => checkForUpdate({
-  currentVersion: app.getVersion(),
-  portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE),
-  fetchImpl: (url, init) => net.fetch(url, init),
-}));
+// PORTABLE_EXECUTABLE_FILE tanımlıdır (asıl exe'nin yolu); ona göre doğru paket seçilir.
+// İndirme adresi renderer'dan alınmaz: son denetimin sonucu burada tutulur.
+let lastUpdate = null;
+let downloadedUpdate = null;
+const portableFile = process.env.PORTABLE_EXECUTABLE_FILE || '';
+
+function updateInstallMode() {
+  return installMode({ packaged: app.isPackaged, platform: process.platform, portableFile });
+}
+
+/** Taşınabilir exe'nin klasörüne yazılabiliyor mu? (Program Files gibi yerlerde yazılamaz.) */
+function canWriteBeside(file) {
+  try {
+    fs.accessSync(path.dirname(file), fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+ipcMain.handle('cybergoose:check-update', async () => {
+  const info = await checkForUpdate({
+    currentVersion: app.getVersion(),
+    portable: Boolean(portableFile),
+    fetchImpl: (url, init) => net.fetch(url, init),
+  });
+  lastUpdate = info;
+  const mode = updateInstallMode();
+  const writable = mode !== 'portable' || canWriteBeside(portableFile);
+  return { ...info, canInstall: Boolean(info.canInstall && info.asset && mode !== 'manual' && writable) };
+});
+
+/** PowerShell betiğini gizli pencerede çalıştırıp çıktısını döndürür. */
+function runPowerShell(script) {
+  return new Promise((resolve, reject) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encodePowerShell(script)],
+      { windowsHide: true, timeout: 30000 }, (error, stdout) => (error ? reject(error) : resolve(stdout)));
+  });
+}
+
+ipcMain.handle('cybergoose:download-update', async (event) => {
+  const mode = updateInstallMode();
+  const asset = lastUpdate?.available ? lastUpdate.asset : null;
+  if (mode === 'manual' || !asset) throw new Error('Bu kurulumda güncelleme uygulama içinden indirilemez; indirme sayfasını kullanın.');
+  const destination = mode === 'portable'
+    ? `${portableFile}.update`
+    : path.join(app.getPath('temp'), 'CyberGoose-update', asset.name);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  let lastSent = 0;
+  const result = await downloadAsset({
+    asset,
+    destination,
+    fetchImpl: (url, init) => net.fetch(url, init),
+    onProgress: (received, total) => {
+      const now = Date.now();
+      if (now - lastSent < 150 && received !== total) return;
+      lastSent = now;
+      if (!event.sender.isDestroyed()) event.sender.send('cybergoose:update-progress', { received, total });
+    },
+  });
+  // Çalışan exe imzalıysa güncelleme de aynı yayıncının geçerli imzasını taşımalı.
+  const currentExe = mode === 'portable' ? portableFile : process.execPath;
+  const [currentSig, nextSig] = await Promise.all([readSignature(currentExe, runPowerShell), readSignature(result.path, runPowerShell)]);
+  const verdict = checkUpdateSignature(currentSig, nextSig);
+  if (!verdict.ok) {
+    fs.rmSync(result.path, { force: true });
+    throw new Error(`${verdict.reason} Güncelleme uygulanmadı; indirme sayfasından kontrol edin.`);
+  }
+  downloadedUpdate = { mode, path: result.path, version: lastUpdate.latest };
+  return { ready: true, version: lastUpdate.latest, mode, signed: verdict.enforced };
+});
+
+ipcMain.handle('cybergoose:apply-update', async () => {
+  if (!downloadedUpdate || !fs.existsSync(downloadedUpdate.path)) throw new Error('Önce güncellemeyi indirin.');
+  if (downloadedUpdate.mode === 'portable') {
+    // Gizli PowerShell: uygulama kapanıp exe kilidi kalkınca dosyayı değiştirir ve yeni sürümü açar.
+    const script = buildSwapScript(portableFile, downloadedUpdate.path);
+    spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-EncodedCommand', encodePowerShell(script)], {
+      detached: true, stdio: 'ignore', windowsHide: true,
+    }).unref();
+  } else {
+    spawn(downloadedUpdate.path, [], { detached: true, stdio: 'ignore' }).unref();
+  }
+  quitConfirmed = true; // Kullanıcı "Yeniden başlat" dedi; aktarım uyarısı tekrar sorulmaz.
+  setImmediate(() => app.quit());
+  return { restarting: true };
+});
 
 // Yerel API tek sefer başlatılır; renderer `cyberGoose.backend()` ile bekler.
 let backendPromise = null;
@@ -194,6 +307,10 @@ if (!hasLock) {
 
 app.whenReady().then(() => {
   if (!hasLock) return;
+  // Yarım kalmış ya da uygulanmamış eski güncelleme dosyaları (ör. indirme sırasında kapatıldı).
+  if (portableFile) {
+    for (const leftover of [`${portableFile}.update`, `${portableFile}.update.part`]) fs.rmSync(leftover, { force: true });
+  }
   ensureBackend().catch(() => {});
   mainWindow = createWindow();
   setupTray();

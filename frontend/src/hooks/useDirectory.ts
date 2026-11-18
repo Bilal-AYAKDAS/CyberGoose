@@ -46,7 +46,7 @@ export function useDirectory(source: EntrySource, requestedPath: string | null, 
           path: listing.path,
           parent: listing.parent,
           crumbs: listing.crumbs,
-          entries: listing.entries.map((entry) => ({ ...entry, source })),
+          entries: listing.entries.map((entry) => (sessionId !== undefined && source === 'remote' ? { ...entry, source, sessionId } : { ...entry, source })),
           error: null,
         })
       })

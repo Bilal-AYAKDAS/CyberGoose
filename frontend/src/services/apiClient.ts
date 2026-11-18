@@ -200,7 +200,15 @@ export type CompareRow = {
   remoteModified: string | null
   newer: 'local' | 'remote' | null
 }
-export type CompareResult = { items: CompareRow[]; summary: Record<CompareStatus, number>; localPath: string; remotePath: string }
+export type CompareResult = {
+  items: CompareRow[]
+  summary: Record<CompareStatus, number>
+  localPath: string
+  remotePath: string
+  /** Uygulanan saat farkı (dakika) ve otomatik bulunup bulunmadığı. */
+  timeOffsetMinutes?: number
+  timeOffsetDetected?: boolean
+}
 
 export type ExternalEdit = {
   id: string
@@ -237,21 +245,22 @@ export const api = {
   getLocalFileInfo: (path: string) => post<FileInspection>('/api/local/info', { path }),
 
   listRemote: (path: string, sessionId?: number) => post<DirectoryListing>('/api/remote/list', { path, sessionId }),
-  getRemoteDetails: (path: string) => post<RemoteDetails>('/api/remote/info', { path }),
-  chmodRemote: (path: string, mode: string) => post<RemoteDetails>('/api/remote/chmod', { path, mode }),
-  readRemoteText: (path: string) => post<RemoteText>('/api/remote/read', { path }),
-  writeRemoteText: (path: string, content: string, options: { encoding?: string; newline?: string } = {}) =>
+  // `sessionId` verilirse sol paneldeki ikinci uzak bağlantı kullanılır.
+  getRemoteDetails: (path: string, sessionId?: number) => post<RemoteDetails>('/api/remote/info', { path, sessionId }),
+  chmodRemote: (path: string, mode: string, sessionId?: number) => post<RemoteDetails>('/api/remote/chmod', { path, mode, sessionId }),
+  readRemoteText: (path: string, sessionId?: number) => post<RemoteText>('/api/remote/read', { path, sessionId }),
+  writeRemoteText: (path: string, content: string, options: { encoding?: string; newline?: string; sessionId?: number } = {}) =>
     post<{ path: string; size: number }>('/api/remote/write', { path, content, ...options }),
   readLocalText: (path: string) => post<RemoteText>('/api/local/read', { path }),
   writeLocalText: (path: string, content: string, options: { encoding?: string; newline?: string } = {}) =>
     post<{ path: string; size: number }>('/api/local/write', { path, content, ...options }),
-  readSheet: (side: 'local' | 'remote', path: string) =>
-    post<SheetData>(`/api/${side}/sheet/read`, { path }),
+  readSheet: (side: 'local' | 'remote', path: string, sessionId?: number) =>
+    post<SheetData>(`/api/${side}/sheet/read`, { path, sessionId }),
   writeSheet: (
     side: 'local' | 'remote',
     path: string,
     sheets: SheetTab[],
-    options: { delimiter?: string; encoding?: string; newline?: string } = {},
+    options: { delimiter?: string; encoding?: string; newline?: string; sessionId?: number } = {},
   ) => post<{ path: string; size: number }>(`/api/${side}/sheet/write`, { path, sheets, ...options }),
 
   startTransfer: (request: TransferRequest | CopyRequest) => post<TransferJobStatus>('/api/transfers', request),
@@ -264,10 +273,15 @@ export const api = {
   syncExternalEdit: (id: string) => post<ExternalEdit>(`/api/external-edits/${encodeURIComponent(id)}/sync`),
   closeExternalEdit: (id: string) =>
     apiRequest<{ closed: string }>(`/api/external-edits/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  extractZip: (path: string) =>
-    post<{ path: string; name: string; files: number; skipped: number }>('/api/extract', { side: 'local', path }),
-  compareFolders: (localPath: string, remotePath: string, sessionId?: number) =>
-    post<CompareResult>('/api/compare', { localPath, remotePath, sessionId }),
+  /** Zip'i yanındaki klasöre açar. Uzakta arşiv indirilip açılır ve klasör sunucuya yüklenir. */
+  extractZip: (path: string, side: 'local' | 'remote' = 'local', sessionId?: number) =>
+    post<{ path: string; name: string; files: number; skipped: number }>('/api/extract', { side, path, sessionId }),
+  /**
+   * Klasör karşılaştırma. `leftSessionId` verilirse sol taraf da uzak bir klasördür.
+   * `timeOffsetMinutes`: sunucu saatinin bilgisayardan farkı; verilmezse otomatik tahmin edilir.
+   */
+  compareFolders: (localPath: string, remotePath: string, sessionId?: number, options: { leftSessionId?: number; timeOffsetMinutes?: number } = {}) =>
+    post<CompareResult>('/api/compare', { localPath, remotePath, sessionId, ...options }),
   search: (side: 'local' | 'remote', path: string, query: string, sessionId?: number) =>
     post<SearchResult>('/api/search', { side, path, query, sessionId }),
   createZip: (parentDir: string, names: string[], name: string) =>
@@ -283,6 +297,8 @@ export const api = {
   createConnection: (input: ConnectionInput) => post<SavedConnection & { warning?: string }>('/api/connections', input),
   updateConnection: (id: string, input: ConnectionInput) =>
     apiRequest<SavedConnection & { warning?: string }>(`/api/connections/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(input) }),
+  setCompareOffset: (id: string, minutes: number | null) =>
+    apiRequest<{ id: number; compareOffset: number | null }>(`/api/connections/${encodeURIComponent(id)}/compare-offset`, { method: 'PUT', body: JSON.stringify({ minutes }) }),
   importFileZilla: (xml: string) =>
     post<{ imported: number; skipped: string[]; warnings: string[] }>('/api/connections/import/filezilla', { xml }),
   deleteConnection: (id: string) =>

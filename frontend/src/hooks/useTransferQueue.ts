@@ -51,6 +51,19 @@ async function ensureFolder(side: 'local' | 'remote', parent: string, name: stri
   }
 }
 
+/** `base` altında `relativeDir` klasör zincirini (yoksa) oluşturur; `created` tekrarları önler. */
+async function ensureRemoteTree(base: string, relativeDir: string, created: Set<string>, sessionId: number) {
+  if (!relativeDir || created.has(relativeDir)) return
+  let acc = ''
+  for (const part of relativeDir.split('/')) {
+    const parentRel = acc
+    acc = acc ? `${acc}/${part}` : part
+    if (created.has(acc)) continue
+    await ensureFolder('remote', joinRemote(base, parentRel), part, sessionId)
+    created.add(acc)
+  }
+}
+
 /**
  * Aktarım kuyruğu. Her öğe eklendiği oturuma bağlıdır (`sessionId`); bağlantı değişse de yanlış
  * sunucuya gitmez. Durum sorgusu geçici hatalarda iş kaybolmaz: birkaç kez yeniden denenir,
@@ -206,28 +219,33 @@ export function useTransferQueue({
    * Uzaktan uzağa kopya (ör. SFTP → SFTP, FTP → Google Drive). Klasörler kaynak oturumda
    * dosya listesine açılır, hedefte klasör yapısı kurulur. Hata olursa yükselir.
    */
+  const makeCopy = useCallback((source: CopyEndpoint, target: CopyEndpoint, name: string, sourceDir: string, targetDir: string, size: number | null, overwrite?: boolean): TransferItem => ({
+    id: crypto.randomUUID(),
+    name,
+    direction: 'copy',
+    localDir: '',
+    remoteDir: targetDir,
+    sourceDir,
+    sourceSessionId: source.sessionId,
+    sessionId: target.sessionId,
+    targetPane: target.pane,
+    from: `${source.label}:${sourceDir}`,
+    to: `${target.label}:${targetDir}`,
+    size,
+    transferred: 0,
+    overwrite: overwrite ?? overwriteDefault === 'overwrite',
+    conflict: overwrite ? 'overwrite' : overwriteDefault === 'ask' ? undefined : overwriteDefault,
+    status: 'queued',
+  }), [overwriteDefault])
+
+  /**
+   * Uzaktan uzağa kopya (ör. SFTP → SFTP, FTP → Google Drive). Klasörler kaynak oturumda
+   * dosya listesine açılır, hedefte klasör yapısı kurulur. Hata olursa yükselir.
+   */
   const enqueueCopy = useCallback(async (entries: FileEntry[], source: CopyEndpoint, target: CopyEndpoint) => {
-    const make = (name: string, sourceDir: string, targetDir: string, size: number | null): TransferItem => ({
-      id: crypto.randomUUID(),
-      name,
-      direction: 'copy',
-      localDir: '',
-      remoteDir: targetDir,
-      sourceDir,
-      sourceSessionId: source.sessionId,
-      sessionId: target.sessionId,
-      targetPane: target.pane,
-      from: `${source.label}:${sourceDir}`,
-      to: `${target.label}:${targetDir}`,
-      size,
-      transferred: 0,
-      overwrite: overwriteDefault === 'overwrite',
-      conflict: overwriteDefault === 'ask' ? undefined : overwriteDefault,
-      status: 'queued',
-    })
     const added: TransferItem[] = entries
       .filter((entry) => entry.kind === 'file')
-      .map((entry) => make(entry.name, source.dir, target.dir, entry.size))
+      .map((entry) => makeCopy(source, target, entry.name, source.dir, target.dir, entry.size))
     for (const folder of entries) {
       if (folder.kind !== 'folder') continue
       const plan = await api.planFolderTransfer('remote', folder.path, source.sessionId)
@@ -235,17 +253,8 @@ export function useTransferQueue({
       await ensureFolder('remote', target.dir, plan.rootName, target.sessionId)
       const created = new Set<string>([''])
       for (const item of plan.files) {
-        if (item.relativeDir && !created.has(item.relativeDir)) {
-          let acc = ''
-          for (const part of item.relativeDir.split('/')) {
-            const parentRel = acc
-            acc = acc ? `${acc}/${part}` : part
-            if (created.has(acc)) continue
-            await ensureFolder('remote', joinRemote(baseTarget, parentRel), part, target.sessionId)
-            created.add(acc)
-          }
-        }
-        added.push(make(item.name, joinRemote(folder.path, item.relativeDir), joinRemote(baseTarget, item.relativeDir), item.size))
+        await ensureRemoteTree(baseTarget, item.relativeDir, created, target.sessionId)
+        added.push(makeCopy(source, target, item.name, joinRemote(folder.path, item.relativeDir), joinRemote(baseTarget, item.relativeDir), item.size))
       }
     }
     if (added.length) {
@@ -253,7 +262,22 @@ export function useTransferQueue({
       setQueueOpen(true)
     }
     return added.length
-  }, [overwriteDefault])
+  }, [makeCopy])
+
+  /** Klasör karşılaştırmasından gelen göreli dosyaları iki sunucu arasında kopyalar. */
+  const enqueueCopyRelative = useCallback(async (items: RelativeFile[], source: CopyEndpoint, target: CopyEndpoint, overwrite?: boolean) => {
+    const created = new Set<string>([''])
+    const added: TransferItem[] = []
+    for (const item of items) {
+      await ensureRemoteTree(target.dir, item.relativeDir, created, target.sessionId)
+      added.push(makeCopy(source, target, item.name, joinRemote(source.dir, item.relativeDir), joinRemote(target.dir, item.relativeDir), item.size, overwrite))
+    }
+    if (added.length) {
+      setTransfers((current) => [...current, ...added])
+      setQueueOpen(true)
+    }
+    return added.length
+  }, [makeCopy])
 
   const enqueue = useCallback((entry: FileEntry, direction: TransferItem['direction']) => {
     enqueueMany([entry], direction)
@@ -468,6 +492,7 @@ export function useTransferQueue({
     enqueueFolders,
     enqueueRelative,
     enqueueCopy,
+    enqueueCopyRelative,
     cancelTransfer,
     retryTransfer,
     retryAll,

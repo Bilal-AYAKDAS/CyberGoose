@@ -11,28 +11,30 @@ type SearchModalProps = {
   path: string
   query: string
   sessionId: number | null
+  /** Panelin gerçek kaynağı: sol panel uzak bağlantıdaysa 'remote' (varsayılan: `side`). */
+  source?: 'local' | 'remote'
   /** Sonuca gider: klasörse içine, dosyaysa bulunduğu klasöre (dosya seçili). */
   onOpen: (hit: SearchHit) => void
   onClose: () => void
 }
 
 /** Odaktaki klasörde alt klasörlerle birlikte ada göre arama. Uzak tarafta aktarım bağlantısı kullanılır. */
-export function SearchModal({ side, path, query, sessionId, onOpen, onClose }: SearchModalProps) {
+export function SearchModal({ side, path, query, sessionId, source = side, onOpen, onClose }: SearchModalProps) {
   const [result, setResult] = useState<SearchResult | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let active = true
-    api.search(side, path, query, side === 'remote' ? sessionId ?? undefined : undefined)
+    api.search(source, path, query, source === 'remote' ? sessionId ?? undefined : undefined)
       .then((found) => { if (active) setResult(found) })
       .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : 'Arama yapılamadı') })
     return () => { active = false }
-  }, [side, path, query, sessionId])
+  }, [source, path, query, sessionId])
 
   return (
     <Modal title={`"${query}" araması`} wide onClose={onClose} footer={<button className="cg-btn" onClick={onClose}>Kapat</button>}>
       <div className="body">
-        <p className="cg-help mono">{side === 'local' ? 'Yerel' : 'Sunucu'} · {path} ve alt klasörleri</p>
+        <p className="cg-help mono">{source === 'local' ? 'Yerel' : 'Sunucu'} · {path} ve alt klasörleri</p>
         {!result && !error && <p className="cg-help" role="status">Aranıyor…</p>}
         {error && <Notice tone="error" title={error} />}
         {result && (

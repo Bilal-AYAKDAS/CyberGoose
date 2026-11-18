@@ -4,9 +4,15 @@ Dosya veri klasöründeki `edits/<kimlik>/` altına indirilir, Electron onu vars
 uygulamayla açar. Arka plandaki iş parçacığı dosyanın değiştirilme zamanını ve boyutunu
 izler; kayıt bittiğinde (iki ardışık kontrolde değişmemişse) dosya aktarım bağlantısıyla
 sunucuya yüklenir. Düzenleme kapatılınca geçici kopya silinir.
+
+Uygulama çökerse ya da kapatılmadan sonlanırsa klasörler kalır. Açılışta `cleanup_stale`
+bunları temizler: her klasörde indirme anındaki imzayı tutan `.cg-edit.json` vardır. Dosya
+indirildiği gibi duruyorsa (ya da son yüklemeden sonra değişmediyse) klasör hemen silinir.
+Yüklenmemiş değişiklik içeren klasör veri kaybı olmasın diye `STALE_KEEP_DAYS` gün tutulur.
 """
 from __future__ import annotations
 
+import json
 import logging
 import posixpath
 import shutil
@@ -22,6 +28,8 @@ logger = logging.getLogger(__name__)
 
 POLL_SECONDS = 1.0
 MAX_WATCHED = 32
+MANIFEST = ".cg-edit.json"
+STALE_KEEP_DAYS = 7
 
 
 @dataclass
@@ -60,6 +68,56 @@ def _signature(path: str) -> tuple[float, int] | None:
     return (info.st_mtime, info.st_size)
 
 
+def _write_manifest(edit: ExternalEdit) -> None:
+    """Klasöre son yüklenen (ya da indirilen) imzayı yazar; açılış temizliği buna bakar."""
+    data = {"remotePath": edit.remote_path, "name": Path(edit.local_path).name, "signature": list(edit.signature)}
+    try:
+        (Path(edit.local_path).parent / MANIFEST).write_text(json.dumps(data), encoding="utf-8")
+    except OSError:
+        logger.debug("Düzenleme bilgisi yazılamadı", exc_info=True)
+
+
+def _has_unsynced_changes(folder: Path) -> bool:
+    """Klasördeki dosya son bilinen imzadan farklıysa (yüklenmemiş değişiklik) True."""
+    try:
+        data = json.loads((folder / MANIFEST).read_text(encoding="utf-8"))
+        name = Path(str(data["name"])).name
+        expected = tuple(data["signature"])
+    except (OSError, ValueError, KeyError, TypeError):
+        # Eski sürümden kalan ya da bozuk klasör: içinde dosya varsa temkinli davranılır.
+        return any(child.is_file() and child.name != MANIFEST for child in folder.iterdir())
+    current = _signature(str(folder / name))
+    return current is not None and (current[0], current[1]) != (float(expected[0]), int(expected[1]))
+
+
+def cleanup_stale(base_dir: str | Path, keep_days: float = STALE_KEEP_DAYS, now: float | None = None) -> dict:
+    """Önceki çalıştırmadan kalan düzenleme klasörlerini siler.
+
+    Dönüş: `{"removed": n, "kept": n}`. Yüklenmemiş değişikliği olan klasör `keep_days`
+    günden yeniyse tutulur (kullanıcı dosyayı kurtarabilsin), daha eskiyse silinir.
+    """
+    base = Path(base_dir)
+    removed = kept = 0
+    if not base.is_dir():
+        return {"removed": 0, "kept": 0}
+    now = time.time() if now is None else now
+    for folder in base.iterdir():
+        if not folder.is_dir():
+            continue
+        try:
+            dirty = _has_unsynced_changes(folder)
+            age = now - max((child.stat().st_mtime for child in folder.iterdir()), default=folder.stat().st_mtime)
+        except OSError:
+            dirty, age = False, 0.0
+        if dirty and age < keep_days * 86400:
+            kept += 1
+            logger.warning("Yüklenmemiş harici düzenleme korunuyor: %s", folder)
+            continue
+        shutil.rmtree(folder, ignore_errors=True)
+        removed += 1
+    return {"removed": removed, "kept": kept}
+
+
 class EditWatcher:
     def __init__(self, transfers, base_dir: str | Path, poll_seconds: float = POLL_SECONDS, autostart: bool = True):
         self._transfers = transfers
@@ -70,6 +128,8 @@ class EditWatcher:
         self._stop = threading.Event()
         self._thread = None
         self._autostart = autostart
+        # Uygulama tek örnek çalışır: bu noktada açık düzenleme yoktur, kalanlar çökme artığıdır.
+        self.startup_cleanup = cleanup_stale(self._base)
 
     # ------------------------------------------------------------ yaşam döngüsü
 
@@ -113,6 +173,7 @@ class EditWatcher:
             raise
         local_path = str(folder / name)
         edit = ExternalEdit(edit_id, snapshot.id, remote_file, local_path, _signature(local_path) or (0.0, 0))
+        _write_manifest(edit)
         with self._lock:
             self._edits[edit_id] = edit
         self._ensure_thread()
@@ -168,6 +229,7 @@ class EditWatcher:
                 edit.session_id, lambda conn: files.upload(conn, folder, name, remote_dir, overwrite=True),
             )
             edit.signature = current
+            _write_manifest(edit)
             edit.pending = None
             edit.uploads += 1
             edit.last_upload = time.time()

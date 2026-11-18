@@ -80,6 +80,15 @@ def describe_connect_error(exc: BaseException, host: str, conn_type: str) -> fil
             "host_key_unknown",
             {"hostKey": {"host": host, "type": exc.key_type, "fingerprint": exc.fingerprint}},
         )
+    from providers.ftp import CertificateChangedError
+
+    if isinstance(exc, CertificateChangedError):
+        return files.FileServiceError(
+            f"{prefix}: sunucunun TLS sertifikası onayladığınız sertifikadan farklı. Sunucu değişmediyse bu bir "
+            "saldırı olabilir; bağlantı güvenlik için durduruldu.",
+            502,
+            "host_key_changed",
+        )
     try:
         import paramiko
 
@@ -131,7 +140,7 @@ def open_server_connection(conn_type: str, host: str, port: int, username: str, 
                            passphrase: str | None = None, use_agent: bool = False):
     if conn_type in ("FTP", "FTPS"):
         from providers.ftp import FTPOperations
-        return FTPOperations(host, port, username, password, tls=conn_type == "FTPS")
+        return FTPOperations(host, port, username, password, tls=conn_type == "FTPS", trusted_fingerprint=trusted_fingerprint)
     from providers.sftp import SFTPOperations
     return SFTPOperations(
         host, port, username, password=password or None, key_filename=key_path or None,

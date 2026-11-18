@@ -70,7 +70,7 @@ export function FileInspector({ entry, onClose, sessionId }: FileInspectorProps)
     let active = true
     const request: Promise<InspectionState> = entry.source === 'local'
       ? api.getLocalFileInfo(path).then((local) => ({ path, local }))
-      : api.getRemoteDetails(path).then((remote) => ({ path, remote }))
+      : api.getRemoteDetails(path, entry.sessionId).then((remote) => ({ path, remote }))
     request
       .then((result) => {
         if (!active) return
@@ -97,7 +97,7 @@ export function FileInspector({ entry, onClose, sessionId }: FileInspectorProps)
   const applyMode = async () => {
     setChmodState({ path: entry.path, busy: true })
     try {
-      const updated = await api.chmodRemote(entry.path, mode)
+      const updated = await api.chmodRemote(entry.path, mode, entry.sessionId)
       setInspection({ path: entry.path, remote: updated })
       setChmodState({ path: entry.path, busy: false, done: true })
     } catch (error) {
@@ -138,7 +138,7 @@ export function FileInspector({ entry, onClose, sessionId }: FileInspectorProps)
           <Notice tone="error" title={current.error} />
         </div>
       )}
-      {entry.kind !== 'folder' && <MediaPreview key={`${entry.source}:${entry.path}`} entry={entry} sessionId={sessionId} />}
+      {entry.kind !== 'folder' && <MediaPreview key={`${entry.source}:${entry.sessionId ?? ''}:${entry.path}`} entry={entry} sessionId={entry.sessionId ?? sessionId} />}
       {preview && (
         <div className="cg-popover-section">
           <div className="cg-label">Önizleme</div>

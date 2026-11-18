@@ -16,7 +16,8 @@ export type ApiEntry = {
   hidden?: boolean
 }
 
-export type FileEntry = ApiEntry & { source: EntrySource }
+/** `sessionId`: sol paneldeki ikinci uzak bağlantının oturumu (yoksa sağdaki etkin oturum). */
+export type FileEntry = ApiEntry & { source: EntrySource; sessionId?: number }
 
 export type Crumb = { name: string; path: string }
 
@@ -64,6 +65,8 @@ export type SavedConnection = {
   useAgent?: boolean
   /** Özel anahtarın parolası güvenli depoda kayıtlı mı. */
   hasPassphrase?: boolean
+  /** Klasör karşılaştırmada kayıtlı sunucu saat farkı (dakika); null: otomatik. */
+  compareOffset?: number | null
 }
 
 export type ConnectionProfile = {
@@ -81,6 +84,8 @@ export type ConnectionProfile = {
   group?: string
   useAgent?: boolean
   hasPassphrase?: boolean
+  /** Klasör karşılaştırmada kayıtlı sunucu saat farkı (dakika); null/yok: otomatik. */
+  compareOffset?: number | null
   /** Kayıtlı (silinebilir/düzenlenebilir) mi, yerleşik bulut girişi mi. */
   saved: boolean
   /** Bulut hesabı için uygulama anahtarları ayarlanmış mı (ayarsızsa kenar çubuğunda soluk). */

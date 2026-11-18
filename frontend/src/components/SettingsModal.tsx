@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react'
 import type { ThemePreference } from '../hooks/useTheme'
 import type { AppSettings } from '../hooks/useSettings'
-import type { UpdateState } from '../hooks/useUpdateCheck'
+import type { InstallState, UpdateState } from '../hooks/useUpdateCheck'
+import { UpdateActions } from './UpdateActions'
 import { Modal } from './Modal'
 
 type SettingsModalProps = {
@@ -11,7 +12,13 @@ type SettingsModalProps = {
   onChange: (next: AppSettings) => void
   onClose: () => void
   /** Güncelleme denetimi; yalnızca masaüstü uygulamasında verilir. */
-  update?: { state: UpdateState; onCheck: () => void; onDownload: (url: string) => void }
+  update?: {
+    state: UpdateState
+    onCheck: () => void
+    onDownload: (url: string) => void
+    /** Uygulama içinden kurulum (taşınabilir exe ya da kurulum dosyası); yoksa yalnızca indirme sayfası. */
+    install?: { canInstall: boolean; state: InstallState; onInstall: () => void; onRestart: () => void }
+  }
 }
 
 function Segmented<T extends string | number>({ label, value, options, onChange }: {
@@ -52,7 +59,7 @@ function Check({ checked, onChange, children }: { checked: boolean; onChange: (v
 }
 
 function UpdateSection({ update }: { update: NonNullable<SettingsModalProps['update']> }) {
-  const { state, onCheck, onDownload } = update
+  const { state, onCheck, onDownload, install } = update
   const info = state.info
   return (
     <div className="cg-field wide">
@@ -61,8 +68,15 @@ function UpdateSection({ update }: { update: NonNullable<SettingsModalProps['upd
         <button className="cg-btn" disabled={state.status === 'checking'} onClick={onCheck}>
           {state.status === 'checking' ? 'Denetleniyor…' : 'Güncellemeleri denetle'}
         </button>
-        {info?.available && info.url && (
-          <button className="cg-btn cg-btn-primary" onClick={() => onDownload(info.url)}>{info.latest} sürümünü indir</button>
+        {info?.available && (
+          <UpdateActions
+            info={info}
+            canInstall={Boolean(install?.canInstall)}
+            install={install?.state ?? { phase: 'idle' }}
+            onInstall={() => install?.onInstall()}
+            onRestart={() => install?.onRestart()}
+            onOpenPage={onDownload}
+          />
         )}
       </div>
       {state.status === 'error' && <span className="cg-help error" role="alert">{state.error}</span>}

@@ -34,6 +34,7 @@ export const toProfile = (saved: SavedConnection): ConnectionProfile => ({
   group: saved.group || undefined,
   useAgent: saved.useAgent || undefined,
   hasPassphrase: saved.hasPassphrase || undefined,
+  compareOffset: saved.compareOffset ?? null,
   saved: true,
 })
 

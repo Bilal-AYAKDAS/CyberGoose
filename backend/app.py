@@ -3,6 +3,7 @@
 Tüm hatalar `{"error": str, "code"?: str}` gövdesi ve uygun HTTP durum koduyla döner.
 İş mantığı `services/` ve `file_service.py` katmanlarındadır; bu modül yalnızca HTTP yönlendirme yapar.
 """
+import hmac
 import logging
 import os
 
@@ -96,7 +97,8 @@ def require_json():
     if token is None and request.path.startswith("/ws/"):
         # Tarayıcı WebSocket API'si başlık gönderemez; anahtar yalnızca WS rotalarında sorgudan kabul edilir.
         token = request.args.get("token")
-    if API_TOKEN and request.method != "OPTIONS" and token != API_TOKEN:
+    # Sabit süreli karşılaştırma: anahtar bayt bayt tahmin edilemesin.
+    if API_TOKEN and request.method != "OPTIONS" and not hmac.compare_digest(str(token or ""), API_TOKEN):
         return error("Yetkisiz istek", 401, "unauthorized")
     if request.method in ("POST", "PUT") and not request.is_json:
         return error('İçerik tipi "application/json" olmalı', 415)
@@ -368,50 +370,55 @@ def remote_list():
     return jsonify(_with_session(data, lambda conn: files.list_remote(conn, data.get("path"))))
 
 
+# Aşağıdaki uçlar `sessionId` alırsa sol paneldeki ikinci bağlantıda çalışır (bkz. _with_session).
+
 @app.post("/api/remote/info")
 def remote_info():
-    with sessions.lock:
-        return jsonify(files.remote_details(sessions.state.connection, body().get("path")))
+    data = body()
+    return jsonify(_with_session(data, lambda conn: files.remote_details(conn, data.get("path"))))
 
 
 @app.post("/api/remote/chmod")
 def remote_chmod():
     data = body()
-    with sessions.lock:
-        files.chmod_remote(sessions.state.connection, data.get("path"), data.get("mode"))
-        return jsonify(files.remote_details(sessions.state.connection, data.get("path")))
+
+    def change(conn):
+        files.chmod_remote(conn, data.get("path"), data.get("mode"))
+        return files.remote_details(conn, data.get("path"))
+
+    return jsonify(_with_session(data, change))
 
 
 @app.post("/api/remote/read")
 def remote_read():
-    filepath = body().get("path")
+    data = body()
+    filepath = data.get("path")
     if not filepath:
         return error("Dosya yolu gerekli", 400)
-    with sessions.lock:
-        return jsonify(files.read_remote_text(sessions.state.connection, filepath))
+    return jsonify(_with_session(data, lambda conn: files.read_remote_text(conn, filepath)))
 
 
 @app.post("/api/remote/write")
 def remote_write():
-    filepath, content, encoding, newline = _text_write_args(body())
-    with sessions.lock:
-        return jsonify(files.write_remote_text(sessions.state.connection, filepath, content, encoding, newline))
+    data = body()
+    filepath, content, encoding, newline = _text_write_args(data)
+    return jsonify(_with_session(data, lambda conn: files.write_remote_text(conn, filepath, content, encoding, newline)))
 
 
 @app.post("/api/remote/sheet/read")
 def remote_sheet_read():
-    filepath = body().get("path")
+    data = body()
+    filepath = data.get("path")
     if not filepath:
         return error("Dosya yolu gerekli", 400)
-    with sessions.lock:
-        return jsonify(files.read_remote_sheet(sessions.state.connection, filepath))
+    return jsonify(_with_session(data, lambda conn: files.read_remote_sheet(conn, filepath)))
 
 
 @app.post("/api/remote/sheet/write")
 def remote_sheet_write():
-    filepath, sheets, delimiter, encoding, newline = _sheet_write_args(body())
-    with sessions.lock:
-        return jsonify(files.write_remote_sheet(sessions.state.connection, filepath, sheets, delimiter, encoding, newline))
+    data = body()
+    filepath, sheets, delimiter, encoding, newline = _sheet_write_args(data)
+    return jsonify(_with_session(data, lambda conn: files.write_remote_sheet(conn, filepath, sheets, delimiter, encoding, newline)))
 
 
 # ---------------------------------------------------------------- aktarım ve dosya işlemleri
@@ -489,9 +496,17 @@ def compare_folders():
     local_path, remote_path = data.get("localPath"), data.get("remotePath")
     if not (local_path and remote_path):
         return error("Yerel ve uzak klasör gerekli", 400)
+    offset = sync_service.parse_offset(data.get("timeOffsetMinutes"))
+    left_session = data.get("leftSessionId")
+    # Sol panel uzak bağlantıdaysa "yerel" taraf o oturumdaki klasördür (uzaktan uzağa karşılaştırma).
+    left_plan = None if left_session in (None, "") else (
+        lambda: transfers.run_with_connection(left_session, lambda conn: files.plan_remote_folder(conn, local_path))
+    )
     result = sync_service.compare_folders(
         local_path,
         lambda: transfers.run_with_connection(data.get("sessionId"), lambda conn: files.plan_remote_folder(conn, remote_path)),
+        offset,
+        left_plan,
     )
     return jsonify(result)
 
@@ -524,12 +539,16 @@ def create_archive():
 
 @app.post("/api/extract")
 def extract_archive():
-    """Yerel zip arşivini yanındaki klasöre açar."""
+    """Zip arşivini yanındaki klasöre açar. Uzakta arşiv geçici klasöre indirilip açılır ve
+    klasör sunucuya yüklenir (sunucuda komut çalıştırılmaz, her sağlayıcıda çalışır)."""
     data = body()
-    if data.get("side", "local") != "local":
-        return error("Arşiv açma yalnızca yerel panelde desteklenir", 400)
+    side = data.get("side", "local")
+    if side not in ("local", "remote"):
+        return error("Taraf 'local' veya 'remote' olmalı", 400)
     if not data.get("path"):
         return error("Arşiv yolu gerekli", 400)
+    if side == "remote":
+        return jsonify(transfers.extract_remote_zip(data.get("sessionId"), data["path"])), 201
     return jsonify(files.extract_local_zip(data["path"])), 201
 
 
@@ -697,6 +716,15 @@ def update_connection(connection_id):
     if not updated:
         return error("Kayıtlı bağlantı bulunamadı", 404)
     return jsonify(_connection_response(connection_id, password_saved))
+
+
+@app.put("/api/connections/<int:connection_id>/compare-offset")
+def set_compare_offset(connection_id):
+    """Bu sunucu için klasör karşılaştırmada kullanılacak saat farkı (dakika); null = otomatik."""
+    minutes = sync_service.parse_offset(body().get("minutes"))
+    if not db.set_compare_offset(connection_id, minutes):
+        return error("Kayıtlı bağlantı bulunamadı", 404)
+    return jsonify({"id": connection_id, "compareOffset": minutes})
 
 
 @app.delete("/api/connections/<int:connection_id>")

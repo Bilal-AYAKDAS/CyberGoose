@@ -112,6 +112,8 @@ Sonuç `release\CyberGoose-1.0.0-portable.exe` dosyasıdır. Tek dosyadır, kuru
 
 Kurulum sihirbazlı sürüm için `npm run dist:installer` kullanılır.
 
+İmzalı exe üretmek için `CSC_LINK` ve `CSC_KEY_PASSWORD` ortam değişkenlerini verin; ayrıntılar `docs/SIGNING.md`'de.
+
 Paketli uygulama verilerini `%APPDATA%\CyberGoose` klasöründe tutar: `data.db`, token dosyaları, `credentials.json` ve isteğe bağlı `.env`. Dropbox ve Drive'ı paketli uygulamada kullanmak için `.env` ve `credentials.json` dosyalarını bu klasöre koyun.
 
 ## Güvenlik notları
@@ -120,3 +122,4 @@ Paketli uygulama verilerini `%APPDATA%\CyberGoose` klasöründe tutar: `data.db`
 - Kayıtlı parolalar SQLite'ta değil, Windows Kimlik Bilgileri Yöneticisi'nde (keyring) saklanır. Keyring yazılamazsa bağlantı parolasız kaydedilir ve arayüz bunu bir uyarıyla söyler; parola hiçbir zaman düz metin olarak diske yazılmaz.
 - Eski sürümün `BOOKMARKS` tablosu ilk açılışta `CONNECTIONS` tablosuna taşınır (şema sürümü `PRAGMA user_version`). Kimlikler korunur.
 - SFTP sunucu anahtarları `known_hosts` dosyasına yalnızca kullanıcı parmak izini onaylayınca yazılır.
+- FTPS'de sertifika doğrulanır; kendinden imzalı sertifika parmak izi onaylanınca `ftps_certs.json`'a sabitlenir, değişirse bağlantı durdurulur.

@@ -92,6 +92,8 @@ class DriveService:
         self.client_secrets_file = client_secrets_file
         self.token_file = token_file
         self.scopes = scopes or ['https://www.googleapis.com/auth/drive']
+        self.credentials = None
+        self.authorized_session = None  # Ham resumable yükleme isteklerinde kullanılır, ilk ihtiyaçta açılır.
         self.service = self.create_drive_service()
 
     def create_drive_service(self):
@@ -119,9 +121,14 @@ class DriveService:
                 creds = run_local_oauth(flow)
             with open(self.token_file, 'w', encoding='utf-8') as token:
                 token.write(creds.to_json())
+        self.credentials = creds
         return build('drive', 'v3', credentials=creds)
 
     def close(self):
+        session = getattr(self, 'authorized_session', None)
+        if session is not None:
+            session.close()
+            self.authorized_session = None
         service = getattr(self, 'service', None)
         if service is not None and hasattr(service, 'close'):
             service.close()

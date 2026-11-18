@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type PropsWithChildren, type ReactNode } from 'react'
+import { useEffect, useId, useRef, type KeyboardEvent, type PropsWithChildren, type ReactNode } from 'react'
 
 type ModalProps = PropsWithChildren<{
   title: string
@@ -8,6 +8,23 @@ type ModalProps = PropsWithChildren<{
   /** Enter tuşu (input içindeyken) birincil eylemi tetikler. */
   onSubmit?: () => void
 }>
+
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+/** Tab diyaloğun dışına (arkadaki panellere) çıkmasın: son öğeden ilkine, ilkinden sona döner. */
+function trapFocus(event: KeyboardEvent<HTMLElement>, dialog: HTMLElement | null) {
+  const items = Array.from(dialog?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])
+  if (!items.length) return
+  const first = items[0]
+  const last = items[items.length - 1]
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
 
 /**
  * Diyalog kabuğu: bg-overlay, radius-lg, shadow-overlay, 440px (wide=true iken geniş).
@@ -44,6 +61,7 @@ export function Modal({ title, footer, wide, onClose, onSubmit, children }: Moda
             event.stopPropagation()
             onClose()
           }
+          if (event.key === 'Tab') trapFocus(event, dialogRef.current)
           if (event.key === 'Enter' && onSubmit && event.target instanceof HTMLInputElement) {
             event.preventDefault()
             onSubmit()

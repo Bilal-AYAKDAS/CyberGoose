@@ -14,13 +14,17 @@ from __future__ import annotations
 
 import csv
 import ftplib
+import hashlib
 import io
+import json
 import logging
 import os
 import posixpath
 import shutil
 import stat
 import string
+import threading
+import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +56,12 @@ DROPBOX_CHUNK_SIZE = 8 * 1024 * 1024
 ONEDRIVE_SIMPLE_LIMIT = 4 * 1024 * 1024
 ONEDRIVE_CHUNK_SIZE = 5 * 1024 * 1024
 GRAPH_DRIVE_ROOT = 'https://graph.microsoft.com/v1.0/me/drive'
+DRIVE_UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3/files'
+DRIVE_CHUNK_SIZE = 8 * 1024 * 1024  # Drive parçaları 256 KB'nin katı olmalı.
+# Yarım kalan bulut yükleme oturumları bu süreden sonra unutulur (Dropbox oturumu 7 gün yaşar).
+UPLOAD_SESSION_MAX_AGE = 6 * 24 * 3600
+UPLOAD_SESSIONS_FILE: str | None = None  # Testler başka bir dosya verebilir.
+_upload_sessions_lock = threading.Lock()
 TRANSFER_CHUNK = 64 * 1024
 
 
@@ -143,6 +153,19 @@ def _iso(timestamp: float | None) -> str | None:
     if timestamp is None:
         return None
     return datetime.fromtimestamp(timestamp).isoformat(timespec='seconds')
+
+
+def _utc_to_local_iso(value) -> str | None:
+    """Saat dilimi bilgisi olmayan UTC datetime'ı (Dropbox SDK böyle döner) yerel ISO'ya çevirir.
+
+    Diğer tarihler (yerel dosyalar, SFTP, MLSD, Drive, OneDrive) zaten yerel saatle yazılır;
+    Dropbox UTC kalınca karşılaştırmada dosyalar saat farkı kadar "daha yeni" görünüyordu.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone().replace(tzinfo=None).isoformat(timespec='seconds')
 
 
 def _entry(name, kind, size, modified, path, hidden=None):
@@ -278,18 +301,19 @@ def remote_crumbs(path: str) -> list[dict]:
 
 def _parse_list_date(text: str) -> str | None:
     """`ls -l` biçimindeki tarihi ISO'ya çevirir: 'Nov 16 14:32' veya 'Nov 16 2025'."""
-    for fmt in ('%b %d %H:%M', '%b %d %Y'):
-        try:
-            parsed = datetime.strptime(text, fmt)
-        except ValueError:
-            continue
-        if fmt == '%b %d %H:%M':
-            now = datetime.now()
-            parsed = parsed.replace(year=now.year)
-            if parsed > now:
-                parsed = parsed.replace(year=now.year - 1)
+    now = datetime.now()
+    try:
+        # Yılsız tarih (son 6 ay): yıl eklenerek ayrıştırılır, yoksa 29 Şubat hiç okunamaz.
+        parsed = datetime.strptime(f'{now.year} {text}', '%Y %b %d %H:%M')
+        if parsed > now:
+            parsed = datetime.strptime(f'{now.year - 1} {text}', '%Y %b %d %H:%M')
         return parsed.isoformat(timespec='seconds')
-    return None
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(text, '%b %d %Y').isoformat(timespec='seconds')
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------- uzak: listeleme
@@ -328,7 +352,11 @@ def _list_ftp(conn, path):
             name = name.split(' -> ')[0]
         is_dir = parts[0].startswith('d')
         size = None if is_dir else int(parts[4]) if parts[4].isdigit() else None
-        entries.append(_entry(name, 'folder' if is_dir else 'file', size, _parse_list_date(' '.join(parts[5:8])), posixpath.join(path, name)))
+        stamp = ' '.join(parts[5:8])
+        entry = _entry(name, 'folder' if is_dir else 'file', size, _parse_list_date(stamp), posixpath.join(path, name))
+        # LIST tarihi sunucunun yerel saatidir ve yalnız dakika (eski dosyalarda gün) hassasiyetindedir.
+        entry["mtimePrecision"] = 60 if ':' in parts[7] else 86400
+        entries.append(entry)
     return entries
 
 
@@ -359,7 +387,7 @@ def _list_dropbox(conn, path):
             item.name,
             'file' if is_file else 'folder',
             item.size if is_file else None,
-            modified.isoformat(timespec='seconds') if modified else None,
+            _utc_to_local_iso(modified),
             getattr(item, 'path_display', None) or posixpath.join(path, item.name),
         ))
     return entries
@@ -657,8 +685,9 @@ def upload(
     `conflict`: hedefte aynı adlı dosya varsa ne yapılacağı. fail (hata, varsayılan), overwrite,
     skip (atla), newer (yalnızca kaynak daha yeniyse yaz), rename ("ad (1).uzantı" olarak yükle).
 
-    `resume` yalnızca FTP/SFTP'de anlamlıdır: hedefte daha küçük bir dosya varsa (yarım kalmış
-    aktarım) eksik kısım eklenir. Aynı boyuttaysa dosya zaten tamdır.
+    `resume`: FTP/SFTP'de hedefte daha küçük bir dosya varsa (yarım kalmış aktarım) eksik kısım
+    eklenir; aynı boyuttaysa dosya zaten tamdır. Dropbox, OneDrive ve Google Drive'da yarım kalan
+    yükleme oturumu kayıtlıysa gönderim o oturumda kaldığı yerden sürer.
     """
     provider = provider_of(conn)
     name = _validate_name(name)
@@ -694,6 +723,7 @@ def upload(
             progress_cb(done, total)
 
     resumed_from = 0
+    resume_key = upload_resume_key(provider, local_file, remote_file) if provider in ('dropbox', 'onedrive', 'drive') else None
     try:
         _check_cancel(cancel_event)
         if provider == 'drive':
@@ -702,19 +732,26 @@ def upload(
             existing = _drive_find_file(service, folder_id, target_name)
             if existing and not overwrite:
                 raise FileServiceError('Hedefte aynı adlı dosya var', 409, 'exists')
-            from googleapiclient.http import MediaFileUpload  # yalnızca Drive bağlıyken gerekli
-            media = MediaFileUpload(str(local_file), mimetype='application/octet-stream', resumable=True)
-            req = (
-                service.files().update(fileId=existing['id'], media_body=media)
-                if existing
-                else service.files().create(body={'name': target_name, 'parents': [folder_id]}, media_body=media, fields='id')
-            )
-            response = None
-            while response is None:
-                _check_cancel(cancel_event)
-                status, response = req.next_chunk()
-                if status is not None:
-                    report(int(status.resumable_progress), size)
+            http = _drive_session(conn)
+            if http is not None:
+                resumed_from = _upload_drive_resumable(
+                    conn, http, local_file, folder_id, target_name, existing['id'] if existing else None, size,
+                    report=report, cancel_event=cancel_event, resume_key=resume_key, resume=resume,
+                )
+            else:
+                from googleapiclient.http import MediaFileUpload  # yalnızca Drive bağlıyken gerekli
+                media = MediaFileUpload(str(local_file), mimetype='application/octet-stream', resumable=True)
+                req = (
+                    service.files().update(fileId=existing['id'], media_body=media)
+                    if existing
+                    else service.files().create(body={'name': target_name, 'parents': [folder_id]}, media_body=media, fields='id')
+                )
+                response = None
+                while response is None:
+                    _check_cancel(cancel_event)
+                    status, response = req.next_chunk()
+                    if status is not None:
+                        report(int(status.resumable_progress), size)
             report(size, size)
         else:
             if resume and provider in ('ftp', 'sftp'):
@@ -745,10 +782,12 @@ def upload(
                     else:
                         conn.ftp.storbinary(f'STOR {remote_file}', handle, blocksize=TRANSFER_CHUNK, callback=on_block)
             elif provider == 'onedrive':
-                _upload_onedrive(conn.session, local_file, remote_file, size, report=report, cancel_event=cancel_event)
+                resumed_from = _upload_onedrive(conn.session, local_file, remote_file, size, report=report,
+                                                cancel_event=cancel_event, resume_key=resume_key, resume=resume)
             else:
                 import dropbox  # yalnızca Dropbox bağlıyken gerekli
-                _upload_dropbox(conn.dbx, local_file, remote_file, size, dropbox, report=report, cancel_event=cancel_event)
+                resumed_from = _upload_dropbox(conn.dbx, local_file, remote_file, size, dropbox, report=report,
+                                               cancel_event=cancel_event, resume_key=resume_key, resume=resume)
     except FileServiceError:
         raise
     except PermissionError:
@@ -758,7 +797,78 @@ def upload(
     return {"name": name, "size": size, "to": remote_file, "resumedFrom": resumed_from, "renamedTo": target_name if target_name != name else None}
 
 
-def _upload_dropbox(dbx, local_file: Path, remote_file: str, size: int, dropbox_mod, report=None, cancel_event=None) -> None:
+# --- Yarım kalan bulut yüklemeleri -------------------------------------------------------------
+#
+# Dropbox, OneDrive ve Google Drive büyük dosyaları sunucuda açılan bir "yükleme oturumuna" parça
+# parça alır. Oturum bilgisi (kimlik/adres ve kaç bayt gönderildiği) her parçadan sonra
+# DATA_DIR/upload_sessions.json'a yazılır. Yükleme yarıda kalır ve kuyrukta "yeniden dene"
+# denirse (resume=True) aynı yerel dosya (yol + boyut + değiştirilme zamanı) ve aynı hedef için
+# kayıt bulunursa gönderim kaldığı yerden sürer; oturum sunucuda düşmüşse baştan başlanır.
+
+
+def _upload_sessions_path() -> Path:
+    if UPLOAD_SESSIONS_FILE:
+        return Path(UPLOAD_SESSIONS_FILE)
+    from config import DATA_DIR
+    return Path(DATA_DIR) / 'upload_sessions.json'
+
+
+def _read_upload_sessions() -> dict:
+    try:
+        data = json.loads(_upload_sessions_path().read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    cutoff = time.time() - UPLOAD_SESSION_MAX_AGE
+    return {key: value for key, value in data.items()
+            if isinstance(value, dict) and float(value.get('savedAt') or 0) >= cutoff}
+
+
+def _write_upload_sessions(data: dict) -> None:
+    path = _upload_sessions_path()
+    tmp = path.with_name(path.name + '.tmp')
+    try:
+        tmp.write_text(json.dumps(data), encoding='utf-8')
+        os.replace(tmp, path)
+    except OSError:
+        logger.warning('Yükleme oturumu kaydedilemedi', exc_info=True)
+
+
+def upload_resume_key(provider: str, local_file: Path, remote_file: str) -> str:
+    info = local_file.stat()
+    raw = json.dumps([provider, str(local_file.resolve()), info.st_size, int(info.st_mtime), remote_file])
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def load_upload_session(key: str | None) -> dict | None:
+    if not key:
+        return None
+    with _upload_sessions_lock:
+        return _read_upload_sessions().get(key)
+
+
+def save_upload_session(key: str | None, **fields) -> None:
+    if not key:
+        return
+    with _upload_sessions_lock:
+        data = _read_upload_sessions()
+        data[key] = {**fields, 'savedAt': time.time()}
+        _write_upload_sessions(data)
+
+
+def drop_upload_session(key: str | None) -> None:
+    if not key:
+        return
+    with _upload_sessions_lock:
+        data = _read_upload_sessions()
+        if data.pop(key, None) is not None:
+            _write_upload_sessions(data)
+
+
+def _upload_dropbox(dbx, local_file: Path, remote_file: str, size: int, dropbox_mod, report=None, cancel_event=None,
+                    resume_key: str | None = None, resume: bool = False) -> int:
+    """Dosyayı Dropbox'a yükler; kaldığı yerden sürdürdüyse başlangıç baytını döndürür."""
     write_mode = dropbox_mod.files.WriteMode.overwrite
     with local_file.open('rb') as handle:
         if size <= DROPBOX_CHUNK_SIZE:
@@ -766,54 +876,220 @@ def _upload_dropbox(dbx, local_file: Path, remote_file: str, size: int, dropbox_
             dbx.files_upload(handle.read(), remote_file, mode=write_mode)
             if report is not None:
                 report(size, size)
-            return
-        _check_cancel(cancel_event)
-        session = dbx.files_upload_session_start(handle.read(DROPBOX_CHUNK_SIZE))
-        cursor = dropbox_mod.files.UploadSessionCursor(session_id=session.session_id, offset=handle.tell())
+            return 0
+        resumed_from = 0
+        saved = load_upload_session(resume_key) if resume else None
+        cursor = None
+        if saved and saved.get('provider') == 'dropbox' and 0 < int(saved.get('offset') or 0) < size:
+            resumed_from = int(saved['offset'])
+            cursor = dropbox_mod.files.UploadSessionCursor(session_id=saved['sessionId'], offset=resumed_from)
+            handle.seek(resumed_from)
+        else:
+            _check_cancel(cancel_event)
+            session = dbx.files_upload_session_start(handle.read(DROPBOX_CHUNK_SIZE))
+            cursor = dropbox_mod.files.UploadSessionCursor(session_id=session.session_id, offset=handle.tell())
+            save_upload_session(resume_key, provider='dropbox', sessionId=session.session_id, offset=handle.tell())
         if report is not None:
             report(handle.tell(), size)
         commit = dropbox_mod.files.CommitInfo(path=remote_file, mode=write_mode)
         while handle.tell() < size:
             _check_cancel(cancel_event)
             chunk = handle.read(DROPBOX_CHUNK_SIZE)
-            if handle.tell() >= size:
-                dbx.files_upload_session_finish(chunk, cursor, commit)
-            else:
-                dbx.files_upload_session_append_v2(chunk, cursor)
-                cursor.offset = handle.tell()
+            try:
+                if handle.tell() >= size:
+                    dbx.files_upload_session_finish(chunk, cursor, commit)
+                else:
+                    dbx.files_upload_session_append_v2(chunk, cursor)
+                    cursor.offset = handle.tell()
+                    save_upload_session(resume_key, provider='dropbox', sessionId=cursor.session_id, offset=cursor.offset)
+            except Exception:
+                if resumed_from and handle.tell() - len(chunk) == resumed_from:
+                    # Kayıtlı oturum sunucuda bulunamadı ya da süresi doldu: baştan yükle.
+                    drop_upload_session(resume_key)
+                    return _upload_dropbox(dbx, local_file, remote_file, size, dropbox_mod, report, cancel_event, resume_key, False)
+                raise
             if report is not None:
                 report(handle.tell(), size)
+    drop_upload_session(resume_key)
+    return resumed_from
 
 
-def _upload_onedrive(session, local_file: Path, remote_file: str, size: int, report=None, cancel_event=None) -> None:
+def _onedrive_next_offset(upload_url: str) -> int | None:
+    """Kayıtlı OneDrive oturumunun beklediği bayt; oturum düşmüşse None."""
+    import requests  # yalnızca OneDrive bağlıyken gerekli
+    try:
+        resp = requests.get(upload_url, timeout=20)
+    except Exception:
+        return None
+    if not resp.ok:
+        return None
+    try:
+        ranges = resp.json().get('nextExpectedRanges') or []
+        return int(str(ranges[0]).split('-')[0]) if ranges else None
+    except (ValueError, IndexError, AttributeError):
+        return None
+
+
+def _upload_onedrive(session, local_file: Path, remote_file: str, size: int, report=None, cancel_event=None,
+                     resume_key: str | None = None, resume: bool = False) -> int:
     if size <= ONEDRIVE_SIMPLE_LIMIT:
         _check_cancel(cancel_event)
         with local_file.open('rb') as handle:
             _onedrive_check(session.put(_onedrive_url(remote_file, '/content'), data=handle.read(), timeout=60))
         if report is not None:
             report(size, size)
-        return
-    session_data = _onedrive_check(
-        session.post(_onedrive_url(remote_file, '/createUploadSession'), json={'item': {'@microsoft.graph.conflictBehavior': 'replace'}}, timeout=20)
-    ) or {}
-    upload_url = session_data.get('uploadUrl')
-    if not upload_url:
-        raise FileServiceError('OneDrive yükleme oturumu açılamadı', 502)
+        return 0
+    upload_url = None
+    offset = 0
+    saved = load_upload_session(resume_key) if resume else None
+    if saved and saved.get('provider') == 'onedrive' and saved.get('uploadUrl'):
+        expected = _onedrive_next_offset(saved['uploadUrl'])
+        if expected is not None and 0 < expected < size:
+            upload_url, offset = saved['uploadUrl'], expected
+    if upload_url is None:
+        session_data = _onedrive_check(
+            session.post(_onedrive_url(remote_file, '/createUploadSession'), json={'item': {'@microsoft.graph.conflictBehavior': 'replace'}}, timeout=20)
+        ) or {}
+        upload_url = session_data.get('uploadUrl')
+        if not upload_url:
+            raise FileServiceError('OneDrive yükleme oturumu açılamadı', 502)
+        save_upload_session(resume_key, provider='onedrive', uploadUrl=upload_url)
+    resumed_from = offset
+    import requests  # yalnızca OneDrive bağlıyken gerekli
     with local_file.open('rb') as handle:
-        offset = 0
+        handle.seek(offset)
+        if report is not None and offset:
+            report(offset, size)
         while offset < size:
             _check_cancel(cancel_event)
             chunk = handle.read(ONEDRIVE_CHUNK_SIZE)
             end = offset + len(chunk) - 1
             headers = {'Content-Length': str(len(chunk)), 'Content-Range': f'bytes {offset}-{end}/{size}'}
             # Yükleme adresi önceden yetkilidir; Authorization başlığı eklenirse Graph 401 dönebilir.
-            import requests  # yalnızca OneDrive bağlıyken gerekli
             resp = requests.put(upload_url, data=chunk, headers=headers, timeout=60)
             if not resp.ok:
                 raise FileServiceError(f'OneDrive parça yükleme hatası ({resp.status_code})', 502)
             offset += len(chunk)
             if report is not None:
                 report(offset, size)
+    drop_upload_session(resume_key)
+    return resumed_from
+
+
+def _drive_session(conn):
+    """Drive'a ham HTTP isteği atan yetkili oturum (resumable upload için)."""
+    session = getattr(conn, 'authorized_session', None)
+    if session is not None:
+        return session
+    credentials = getattr(conn, 'credentials', None)
+    if credentials is None:
+        return None
+    from google.auth.transport.requests import AuthorizedSession  # yalnızca Drive bağlıyken gerekli
+    session = AuthorizedSession(credentials)
+    try:
+        conn.authorized_session = session
+    except AttributeError:
+        pass
+    return session
+
+
+def _drive_range_end(resp) -> int:
+    """308 yanıtındaki `Range: bytes=0-N` başlığından sunucunun aldığı bayt sayısı."""
+    value = resp.headers.get('Range') or resp.headers.get('range')
+    if not value:
+        return 0
+    try:
+        return int(value.rsplit('-', 1)[1]) + 1
+    except (ValueError, IndexError):
+        return 0
+
+
+def _drive_start_upload(http, folder_id: str, name: str, existing_id: str | None, size: int) -> str:
+    headers = {'X-Upload-Content-Type': 'application/octet-stream', 'X-Upload-Content-Length': str(size)}
+    if existing_id:
+        resp = http.patch(f'{DRIVE_UPLOAD_URL}/{existing_id}?uploadType=resumable&supportsAllDrives=true',
+                          json={}, headers=headers, timeout=30)
+    else:
+        resp = http.post(f'{DRIVE_UPLOAD_URL}?uploadType=resumable&supportsAllDrives=true',
+                         json={'name': name, 'parents': [folder_id]}, headers=headers, timeout=30)
+    location = resp.headers.get('Location') or resp.headers.get('location')
+    if resp.status_code >= 400 or not location:
+        raise FileServiceError(f'Google Drive yükleme oturumu açılamadı ({resp.status_code})', 502)
+    return location
+
+
+def _drive_upload_offset(http, upload_uri: str, size: int) -> int | None:
+    """Kayıtlı Drive oturumunun aldığı bayt sayısı; oturum düşmüşse None."""
+    try:
+        resp = http.put(upload_uri, data=b'', headers={'Content-Range': f'bytes */{size}'}, timeout=30)
+    except Exception:
+        return None
+    if resp.status_code in (200, 201):
+        return size
+    if resp.status_code == 308:
+        return _drive_range_end(resp)
+    return None
+
+
+def _drive_send_chunks(http, upload_uri: str, size: int, offset: int, read, seek, report, cancel_event,
+                       on_offset=None) -> None:
+    """Drive resumable oturumuna `offset`ten itibaren parça parça yazar.
+
+    Sunucu bir parçanın yalnızca bir kısmını aldıysa `seek` ile geri sarılır; akışta (seek yok)
+    bu durumda yükleme hatayla biter.
+    """
+    while offset < size:
+        _check_cancel(cancel_event)
+        chunk = read(min(DRIVE_CHUNK_SIZE, size - offset))
+        if not chunk:
+            raise FileServiceError('Kaynak beklenenden kısa bitti', 502, 'incomplete')
+        end = offset + len(chunk) - 1
+        resp = http.put(upload_uri, data=chunk, headers={'Content-Range': f'bytes {offset}-{end}/{size}'}, timeout=120)
+        if resp.status_code in (200, 201):
+            offset = size
+        elif resp.status_code == 308:
+            received = _drive_range_end(resp)
+            if received != end + 1:
+                if seek is None:
+                    raise FileServiceError('Google Drive parçayı eksik aldı', 502)
+                seek(received)
+            offset = received
+        else:
+            raise FileServiceError(f'Google Drive parça yükleme hatası ({resp.status_code})', 502)
+        if on_offset is not None:
+            on_offset(offset)
+        if report is not None:
+            report(offset, size)
+
+
+def _upload_drive_resumable(conn, http, local_file: Path, folder_id: str, name: str, existing_id: str | None,
+                            size: int, report=None, cancel_event=None,
+                            resume_key: str | None = None, resume: bool = False) -> int:
+    upload_uri = None
+    offset = 0
+    saved = load_upload_session(resume_key) if resume else None
+    if saved and saved.get('provider') == 'drive' and saved.get('uploadUri'):
+        received = _drive_upload_offset(http, saved['uploadUri'], size)
+        if received is not None and 0 < received:
+            upload_uri, offset = saved['uploadUri'], received
+    if upload_uri is None:
+        upload_uri = _drive_start_upload(http, folder_id, name, existing_id, size)
+        save_upload_session(resume_key, provider='drive', uploadUri=upload_uri)
+    resumed_from = offset
+    with local_file.open('rb') as handle:
+        handle.seek(offset)
+        if report is not None and offset:
+            report(offset, size)
+        if size == 0:
+            resp = http.put(upload_uri, data=b'', headers={'Content-Range': 'bytes */0'}, timeout=30)
+            if resp.status_code not in (200, 201):
+                raise FileServiceError(f'Google Drive yükleme hatası ({resp.status_code})', 502)
+        else:
+            _drive_send_chunks(http, upload_uri, size, offset, handle.read, handle.seek, report, cancel_event)
+    drop_upload_session(resume_key)
+    if report is not None:
+        report(size, size)
+    return resumed_from
 
 
 def download(
@@ -925,8 +1201,22 @@ def download(
 
                 conn.ftp.retrbinary(f'RETR {remote_file}', on_chunk, blocksize=TRANSFER_CHUNK, rest=offset or None)
         elif provider == 'dropbox':
-            conn.dbx.files_download_to_file(str(partial), remote_file)
-            report(partial.stat().st_size, partial.stat().st_size)
+            # Parça parça okunur: ilerleme görünür ve iptal büyük dosyada da hemen çalışır.
+            metadata, response = conn.dbx.files_download(remote_file)
+            total_size = getattr(metadata, 'size', None)
+            transferred = 0
+            try:
+                with partial.open('wb') as handle:
+                    for chunk in response.iter_content(chunk_size=TRANSFER_CHUNK):
+                        if not chunk:
+                            continue
+                        _check_cancel(cancel_event)
+                        handle.write(chunk)
+                        transferred += len(chunk)
+                        report(transferred, total_size)
+            finally:
+                response.close()
+            report(transferred, transferred)
         elif provider == 'onedrive':
             with conn.session.get(_onedrive_url(remote_file, '/content'), stream=True, timeout=60) as resp:
                 if resp.status_code in (401, 404):
@@ -1293,7 +1583,10 @@ def plan_remote_folder(conn, path: str) -> dict:
                 next_rel = entry["name"] if not rel_prefix else f"{rel_prefix}/{entry['name']}"
                 walk(entry["path"], next_rel)
             else:
-                collected.append({"relativeDir": rel_prefix, "name": entry["name"], "size": entry["size"], "modified": entry.get("modified")})
+                item = {"relativeDir": rel_prefix, "name": entry["name"], "size": entry["size"], "modified": entry.get("modified")}
+                if entry.get("mtimePrecision"):
+                    item["mtimePrecision"] = entry["mtimePrecision"]
+                collected.append(item)
 
     walk(remote_root, '')
     return {"rootName": root_name, "path": remote_root, "files": collected}
@@ -1932,3 +2225,321 @@ def chmod_remote(conn, path: str, mode: str) -> None:
         raise
     except Exception as error:
         raise FileServiceError('İzinler değiştirilemedi', 502, type(error).__name__) from error
+
+
+# ---------------------------------------------------------------- uzaktan uzağa akış (diske yazmadan)
+
+STREAM_QUEUE_CHUNKS = 64  # en fazla ~64 parça (FTP/SFTP'de 64 KB → ~4 MB) bellekte bekler
+
+
+class SourceFailed(Exception):
+    """Kaynak tarafı (okuyan iş parçacığı) hata verdi; asıl hata `original` içindedir."""
+
+    def __init__(self, original: BaseException):
+        super().__init__(str(original))
+        self.original = original
+
+
+class _PipeAborted(Exception):
+    """Okuyan taraf vazgeçti (iptal ya da hedef hatası); yazan taraf durur."""
+
+
+class StreamPipe:
+    """Kaynaktan okuyan iş parçacığı ile hedefe yazan iş parçacığı arasında sınırlı bayt kanalı.
+
+    Kuyruk dolunca yazan bekler; böylece büyük dosya belleğe ya da diske birikmez. `read(n)`
+    dosya nesnesi gibi davranır (ftplib `storbinary` ve parça parça yükleyen sağlayıcılar için).
+    """
+
+    def __init__(self, max_chunks: int = STREAM_QUEUE_CHUNKS):
+        import queue
+
+        self._queue = queue.Queue(maxsize=max_chunks)
+        self._buffer = bytearray()
+        self._eof = False
+        self._aborted = threading.Event()
+
+    # yazan taraf
+    def write(self, data) -> int:
+        if not data:
+            return 0
+        chunk = bytes(data)
+        while True:
+            if self._aborted.is_set():
+                raise _PipeAborted()
+            try:
+                self._queue.put(chunk, timeout=0.2)
+                return len(chunk)
+            except Exception:  # queue.Full
+                continue
+
+    def close(self) -> None:
+        self._put_marker(("eof", None))
+
+    def fail(self, exc: BaseException) -> None:
+        self._put_marker(("error", exc))
+
+    def _put_marker(self, marker) -> None:
+        while not self._aborted.is_set():
+            try:
+                self._queue.put(marker, timeout=0.2)
+                return
+            except Exception:  # queue.Full
+                continue
+
+    # okuyan taraf
+    def abort(self) -> None:
+        self._aborted.set()
+
+    def read(self, size: int = -1) -> bytes:
+        """En fazla `size` bayt; kaynak bitince b''. `size` doluncaya kadar bekler (son parça hariç)."""
+        while not self._eof and (size < 0 or len(self._buffer) < size):
+            item = self._queue.get()
+            if isinstance(item, tuple):
+                kind, exc = item
+                if kind == "error":
+                    raise SourceFailed(exc)
+                self._eof = True
+                break
+            self._buffer.extend(item)
+        if size < 0:
+            size = len(self._buffer)
+        data = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        return data
+
+
+def open_stream_source(conn, remote_dir: str, name: str) -> dict:
+    """Uzak dosyayı akışla okumaya hazırlar (ağda yalnızca boyut/kimlik sorgusu yapılır).
+
+    Dönüş: `{"name": hedefte kullanılacak ad, "size": bayt ya da None, "run": run(conn, sink, cancel_event)}`.
+    `run` aynı sunucuya açılmış (başka) bir bağlantıyla çalıştırılabilir; veriyi `sink.write` ile verir.
+    Google belgeleri dışa aktarılır (ad uzantı alır, boyut önceden bilinmez).
+    """
+    provider = provider_of(conn)
+    name = _validate_name(name)
+    remote_dir = normalize_remote(remote_dir)
+    remote_file = posixpath.join(remote_dir, name)
+    out_name = name
+    try:
+        if provider == 'sftp':
+            size = conn.sftp.stat(remote_file).st_size
+
+            def run(source, sink, cancel_event):
+                with source.sftp.open(remote_file, 'rb') as handle:
+                    handle.prefetch(size)
+                    for chunk in iter(lambda: handle.read(TRANSFER_CHUNK), b''):
+                        _check_cancel(cancel_event)
+                        sink.write(chunk)
+        elif provider == 'ftp':
+            size = _remote_size('ftp', conn, remote_file)
+            if size is None and not _remote_exists('ftp', conn, remote_file):
+                raise FileServiceError('Uzak dosya bulunamadı', 404)
+
+            def run(source, sink, cancel_event):
+                def on_chunk(chunk):
+                    _check_cancel(cancel_event)
+                    sink.write(chunk)
+                source.ftp.retrbinary(f'RETR {remote_file}', on_chunk, blocksize=TRANSFER_CHUNK)
+        elif provider == 'dropbox':
+            size = getattr(conn.dbx.files_get_metadata(remote_file), 'size', None)
+
+            def run(source, sink, cancel_event):
+                _meta, response = source.dbx.files_download(remote_file)
+                try:
+                    for chunk in response.iter_content(chunk_size=TRANSFER_CHUNK):
+                        _check_cancel(cancel_event)
+                        sink.write(chunk)
+                finally:
+                    response.close()
+        elif provider == 'onedrive':
+            size = _remote_size('onedrive', conn, remote_file)
+            if size is None:
+                raise FileServiceError('Uzak dosya bulunamadı', 404)
+
+            def run(source, sink, cancel_event):
+                with source.session.get(_onedrive_url(remote_file, '/content'), stream=True, timeout=60) as resp:
+                    if not resp.ok:
+                        _onedrive_check(resp)
+                        raise FileServiceError(f'OneDrive indirme hatası ({resp.status_code})', 502)
+                    for chunk in resp.iter_content(chunk_size=TRANSFER_CHUNK):
+                        _check_cancel(cancel_event)
+                        sink.write(chunk)
+        else:
+            service = conn.service
+            found = _drive_find_file(service, _drive_resolve_folder(service, remote_dir), name)
+            if not found:
+                raise FileServiceError('Uzak dosya bulunamadı', 404)
+            mime = str(found.get('mimeType') or '')
+            export = None
+            if mime.startswith(DRIVE_WORKSPACE_PREFIX):
+                export = DRIVE_EXPORTS.get(mime)
+                if export is None:
+                    raise FileServiceError('Bu Google dosya türü dışa aktarılamaz.', 400, 'google_workspace_file')
+                if not out_name.lower().endswith(export[1]):
+                    out_name += export[1]
+            size = None if export else (int(found['size']) if found.get('size') is not None else None)
+
+            def run(source, sink, cancel_event):
+                from googleapiclient.http import MediaIoBaseDownload
+                files_api = source.service.files()
+                request = files_api.export_media(fileId=found['id'], mimeType=export[0]) if export else files_api.get_media(fileId=found['id'])
+                downloader = MediaIoBaseDownload(sink, request, chunksize=DROPBOX_CHUNK_SIZE)
+                done = False
+                while not done:
+                    _check_cancel(cancel_event)
+                    _status, done = downloader.next_chunk()
+    except FileServiceError:
+        raise
+    except FileNotFoundError:
+        raise FileServiceError('Uzak dosya bulunamadı', 404)
+    except Exception as error:
+        _raise_provider_error('Kaynak dosya okunamadı', error)
+    return {"name": out_name, "size": size, "run": run, "from": remote_file}
+
+
+def can_stream_to(provider: str, size: int | None) -> bool:
+    """Hedefe diske yazmadan akışla yüklenebilir mi?
+
+    Google Drive (ham resumable oturum) ve OneDrive parça yüklemesi toplam boyutu baştan bilmek
+    ister; boyut bilinmiyorsa geçici dosya kullanılır.
+    """
+    if provider in ('drive', 'onedrive'):
+        return size is not None
+    return True
+
+
+def stream_upload(conn, reader, size: int | None, remote_dir: str, name: str, policy: str,
+                  progress_cb=None, cancel_event=None) -> dict:
+    """`reader.read(n)` ile gelen veriyi uzak dosyaya yazar. `policy`: overwrite | fail | rename."""
+    provider = provider_of(conn)
+    name = _validate_name(name)
+    remote_dir = normalize_remote(remote_dir)
+    target_name = name
+    remote_file = posixpath.join(remote_dir, name)
+    if policy == 'rename' and _remote_file_exists(provider, conn, remote_file):
+        target_name = next(candidate for candidate in _numbered_names(name)
+                           if not _remote_file_exists(provider, conn, posixpath.join(remote_dir, candidate)))
+        remote_file = posixpath.join(remote_dir, target_name)
+    elif policy == 'fail' and _remote_file_exists(provider, conn, remote_file):
+        raise FileServiceError('Hedefte aynı adlı dosya var', 409, 'exists')
+    done = 0
+
+    def counted(chunk: bytes) -> bytes:
+        nonlocal done
+        done += len(chunk)
+        _check_cancel(cancel_event)
+        if progress_cb is not None:
+            progress_cb(done, size)
+        return chunk
+
+    def read(amount: int) -> bytes:
+        return counted(reader.read(amount))
+
+    try:
+        _check_cancel(cancel_event)
+        if provider == 'sftp':
+            with conn.sftp.open(remote_file, 'wb') as target:
+                target.set_pipelined(True)
+                for chunk in iter(lambda: read(TRANSFER_CHUNK), b''):
+                    target.write(chunk)
+        elif provider == 'ftp':
+            class _Reader:
+                def read(self, amount=TRANSFER_CHUNK):
+                    return read(amount)
+            conn.ftp.storbinary(f'STOR {remote_file}', _Reader(), blocksize=TRANSFER_CHUNK)
+        elif provider == 'dropbox':
+            import dropbox  # yalnızca Dropbox bağlıyken gerekli
+            mode = dropbox.files.WriteMode.overwrite
+            first = read(DROPBOX_CHUNK_SIZE)
+            following = read(DROPBOX_CHUNK_SIZE) if len(first) == DROPBOX_CHUNK_SIZE else b''
+            if not following:
+                conn.dbx.files_upload(first, remote_file, mode=mode)
+            else:
+                session = conn.dbx.files_upload_session_start(first)
+                cursor = dropbox.files.UploadSessionCursor(session_id=session.session_id, offset=len(first))
+                commit = dropbox.files.CommitInfo(path=remote_file, mode=mode)
+                chunk = following
+                while True:
+                    nxt = read(DROPBOX_CHUNK_SIZE) if len(chunk) == DROPBOX_CHUNK_SIZE else b''
+                    if not nxt:
+                        conn.dbx.files_upload_session_finish(chunk, cursor, commit)
+                        break
+                    conn.dbx.files_upload_session_append_v2(chunk, cursor)
+                    cursor.offset += len(chunk)
+                    chunk = nxt
+        elif provider == 'onedrive':
+            if size is None:
+                raise FileServiceError('OneDrive akışla yükleme için dosya boyutu gerekli', 400)
+            if size <= ONEDRIVE_SIMPLE_LIMIT:
+                _onedrive_check(conn.session.put(_onedrive_url(remote_file, '/content'), data=read(size + 1), timeout=60))
+            else:
+                import requests  # yalnızca OneDrive bağlıyken gerekli
+                session_data = _onedrive_check(conn.session.post(
+                    _onedrive_url(remote_file, '/createUploadSession'),
+                    json={'item': {'@microsoft.graph.conflictBehavior': 'replace'}}, timeout=20,
+                )) or {}
+                upload_url = session_data.get('uploadUrl')
+                if not upload_url:
+                    raise FileServiceError('OneDrive yükleme oturumu açılamadı', 502)
+                offset = 0
+                while offset < size:
+                    chunk = read(ONEDRIVE_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    headers = {'Content-Length': str(len(chunk)), 'Content-Range': f'bytes {offset}-{offset + len(chunk) - 1}/{size}'}
+                    resp = requests.put(upload_url, data=chunk, headers=headers, timeout=60)
+                    if not resp.ok:
+                        raise FileServiceError(f'OneDrive parça yükleme hatası ({resp.status_code})', 502)
+                    offset += len(chunk)
+        elif provider == 'drive':
+            if size is None:
+                raise FileServiceError('Google Drive akışla yükleme için dosya boyutu gerekli', 400)
+            http = _drive_session(conn)
+            if http is None:
+                raise FileServiceError('Bu hedefe akışla yükleme desteklenmiyor', 400, 'stream_unsupported')
+            folder_id = _drive_resolve_folder(conn.service, remote_dir)
+            existing = _drive_find_file(conn.service, folder_id, target_name)
+            upload_uri = _drive_start_upload(http, folder_id, target_name, existing['id'] if existing else None, size)
+            if size == 0:
+                resp = http.put(upload_uri, data=b'', headers={'Content-Range': 'bytes */0'}, timeout=30)
+                if resp.status_code not in (200, 201):
+                    raise FileServiceError(f'Google Drive yükleme hatası ({resp.status_code})', 502)
+            else:
+                # Akış geri sarılamaz; parça eksik alınırsa yükleme hatayla biter ve kuyruk yeniden dener.
+                _drive_send_chunks(http, upload_uri, size, 0, read, None, None, cancel_event)
+            read(1)  # Kaynak beklenenden uzunsa `done` boyutu aşar ve aşağıda eksik/fazla hatası verilir.
+        else:
+            raise FileServiceError('Bu hedefe akışla yükleme desteklenmiyor', 400, 'stream_unsupported')
+    except (FileServiceError, SourceFailed):
+        raise
+    except PermissionError:
+        raise FileServiceError('Hedef klasöre yazma izniniz yok', 403)
+    except Exception as error:
+        _raise_provider_error('Yükleme başarısız oldu', error)
+    if size is not None and done != size:
+        raise FileServiceError(f'Aktarım eksik kaldı ({done}/{size} bayt). Yeniden deneyin.', 502, 'incomplete')
+    return {"name": name, "size": done, "to": remote_file, "resumedFrom": 0,
+            "renamedTo": target_name if target_name != name else None, "streamed": True}
+
+
+def upload_tree(conn, local_root: Path, remote_parent: str, folder_name: str) -> dict:
+    """Yerel klasörü uzak klasörün altına yükler. Aynı adlı öğe varsa "ad (1)" kullanılır."""
+    remote_parent = normalize_remote(remote_parent)
+    existing = {entry["name"] for entry in list_remote(conn, remote_parent)["entries"]}
+    target_name = folder_name if folder_name not in existing else next(
+        candidate for candidate in _numbered_names(folder_name) if candidate not in existing
+    )
+    create_remote_folder(conn, remote_parent, target_name)
+    base = posixpath.join(remote_parent, target_name)
+    count = 0
+    for current, dirs, filenames in os.walk(local_root):
+        rel = Path(current).relative_to(local_root).as_posix()
+        remote_dir = base if rel == '.' else posixpath.join(base, rel)
+        dirs.sort()
+        for folder in dirs:
+            create_remote_folder(conn, remote_dir, folder)
+        for filename in sorted(filenames):
+            upload(conn, current, filename, remote_dir, overwrite=True)
+            count += 1
+    return {"path": base, "name": target_name, "files": count}

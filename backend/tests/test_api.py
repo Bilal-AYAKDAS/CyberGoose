@@ -320,8 +320,9 @@ def test_ftps_connect_uses_tls_and_utf8(client, monkeypatch):
     calls = []
 
     class FakeFTP:
-        def __init__(self, timeout=20):
+        def __init__(self, timeout=20, context=None):
             self.encoding = None
+            calls.append(("context", context is not None))
 
         def connect(self, host, port):
             calls.append(("connect", host, port))
@@ -340,6 +341,8 @@ def test_ftps_connect_uses_tls_and_utf8(client, monkeypatch):
     assert resp.status_code == 200
     assert resp.get_json()["type"] == "FTPS"
     assert ("prot_p",) in calls
+    # Sertifika doğrulaması için bir SSL bağlamı verilir.
+    assert ("context", True) in calls
 
 
 def test_sftp_connect_and_chmod_and_details(client, monkeypatch):

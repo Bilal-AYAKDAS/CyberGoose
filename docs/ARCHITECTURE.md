@@ -1,6 +1,6 @@
 # CyberGoose Mimarisi
 
-Son güncelleme: 16.11.2026. Bu belge eski `ARCHITECTURE_AND_UPDATE_SUMMARY.md` dosyasının yerini alır.
+Son güncelleme: 17.11.2026. Bu belge eski `ARCHITECTURE_AND_UPDATE_SUMMARY.md` dosyasının yerini alır.
 
 ## 1. Genel bakış
 
@@ -104,12 +104,16 @@ Dosya girdisi: `{name, kind: file|folder, size, modified, path, hidden}`. `hidde
 - Her oturuma artan bir `sessionId` ve bir `SessionSnapshot` verilir. Görüntü, aynı sunucuya yeni bağlantı açan bir `factory` içerir (FTP/FTPS/SFTP ve Google Drive). Bağlantı değişince eski görüntü "kapandı" işaretlenir ama son 16 görüntü tutulur, böylece kuyrukta bekleyen işler doğru sunucuya gider.
 - `TransferManager` panel kilidini hiç tutmaz. İşler en fazla 4 paralel çalışır ve oturum başına küçük bir `ConnectionPool`'dan bağlantı ödünç alır (en fazla 2 boşta). Hatalı ya da iptal edilen bağlantı havuza geri konmaz.
 - FTP ve SFTP aktarımları önce `.cgpart` dosyasına yazılır, bitince yeniden adlandırılır. `resume` ile yarım kalan dosyanın sonundan devam edilir (FTP `REST`/`APPE`, SFTP ofset).
-- Uzaktan uzağa aktarım: sol panel `POST /api/side/connect` ile ikinci bir oturum açabilir (`open_side`). Bu oturum etkin oturumu değiştirmez, eski görüntü sınırına takılmaz ve `POST /api/side/disconnect` ile kapanır. Sol paneldeki listeleme, yeniden adlandırma, silme ve klasör oluşturma `sessionId` ile aktarım havuzundan yapılır. `direction: "copy"` işi önce hedefteki çakışmayı çözer, sonra dosyayı kaynak oturumdan `DATA_DIR/relay` altına indirir, hedef oturuma yükler ve geçici dosyayı siler. İlerleme iki aşamanın yarı yarıya toplamıdır. Uygulama açılırken eski `relay` artıkları temizlenir.
+- Uzaktan uzağa aktarım: sol panel `POST /api/side/connect` ile ikinci bir oturum açabilir (`open_side`). Bu oturum etkin oturumu değiştirmez, eski görüntü sınırına takılmaz ve `POST /api/side/disconnect` ile kapanır. Sol paneldeki listeleme, detaylar, chmod, metin/tablo düzenleyici, önizleme, harici düzenleyici, zip açma, arama ve karşılaştırma `sessionId` ile o oturumdan yapılır.
+- `direction: "copy"` işi önce hedefteki çakışmayı çözer (atlanacak dosya hiç okunmaz), sonra veriyi **diske yazmadan akışla** taşır: bir iş parçacığı kaynaktan okuyup sınırlı bir bellek kanalına (`StreamPipe`, ~4 MB) yazar, iş hedefe yükler. İptal ve iki taraftaki hatalar karşı tarafı da durdurur; eksik kalan aktarım `incomplete` hatası verir. Google Drive ve OneDrive'a akış, boyut biliniyorsa ham resumable oturumla yapılır; boyutu bilinmeyen bir dosya (dışa aktarılan Google belgesi) bu iki hedefe gidiyorsa eski yönteme düşülür: `DATA_DIR/relay` altına indir, yükle, sil. Akışlı kopya iki sunucu yuvasını birlikte tutar; yuvalar tek bir kilit altında topluca alınır, böylece ters yönlü kopyalar birbirini kilitlemez.
+- Bulut yüklemelerinde sürdürme: Dropbox (upload session), OneDrive (`createUploadSession`) ve Google Drive (`uploadType=resumable`, `AuthorizedSession` ile ham istek) büyük dosyaları parça parça gönderir. Oturum kimliği/adresi ve gönderilen bayt her parçadan sonra `DATA_DIR/upload_sessions.json`'a yazılır; anahtar yerel dosyanın yolu, boyutu, değiştirilme zamanı ve hedef yoludur. Kuyrukta yeniden denenen yükleme (`resume`) kayıt bulursa sunucuya kaç bayt aldığını sorar (OneDrive `nextExpectedRanges`, Drive `Content-Range: bytes */N`) ve oradan sürer; oturum düşmüşse baştan başlar. Kayıtlar 6 gün sonra unutulur. Drive bir parçanın yalnız bir kısmını alırsa dosya geri sarılır; akışta bu durum hatadır.
+- Uzak zip açma (`POST /api/extract` `side: "remote"`): arşiv geçici klasöre indirilir, yerel açmayla aynı güvenlik kurallarıyla (zip-slip, boyut ve öğe sınırı) açılır ve klasör sunucuya `ad` ya da `ad (1)` olarak yüklenir. Sunucuda komut çalıştırılmaz, her sağlayıcıda çalışır.
+- Harici düzenleyici (`edits/<kimlik>/`): her klasörde son yüklenen imzayı tutan `.cg-edit.json` vardır. Uygulama çöker ya da kapatılmadan sonlanırsa açılışta temizlenir: değişmemiş kopyalar silinir, yüklenmemiş değişiklik içeren kopya 7 gün tutulur.
 - Terminal WebSocket'i Werkzeug'un threaded sunucusunda çalışır (paketli uygulamada da). Çok baytlı UTF-8 karakterler parçalara bölünse de artımlı çözücüyle doğru gösterilir. `?token=` sorgu parametresi yalnızca `/ws/` yollarında kabul edilir.
 
 ### Veritabanı
 
-SQLite şeması `PRAGMA user_version` ile sürümlenir (şu an 3). Sürüm 1'deki `BOOKMARKS` tablosu `CONNECTIONS` tablosuna kimlikleri korunarak taşınır. Sürüm 3, SFTP bağlantılarına `KEY_PATH` (özel anahtar dosyasının yolu, dosyanın kendisi değil) ekler. Parolalar keyring'de `CyberGoose` servis adı ve bağlantı kimliğiyle saklanır.
+SQLite şeması `PRAGMA user_version` ile sürümlenir (şu an 6). Sürüm 1'deki `BOOKMARKS` tablosu `CONNECTIONS` tablosuna kimlikleri korunarak taşınır. Sürüm 3, SFTP bağlantılarına `KEY_PATH` (özel anahtar dosyasının yolu, dosyanın kendisi değil) ekler; 4 `GROUP_NAME`, 5 `USE_AGENT`, 6 `COMPARE_OFFSET` (karşılaştırma saat farkı, dakika; NULL otomatik). Parolalar keyring'de `CyberGoose` servis adı ve bağlantı kimliğiyle saklanır.
 
 ### Yapılandırma ve veri klasörü
 
@@ -125,6 +129,7 @@ SQLite şeması `PRAGMA user_version` ile sürümlenir (şu an 3). Sürüm 1'dek
 - CORS yalnızca Vite geliştirme adresine ve `file://` (`null`) kaynağına açıktır.
 - Parolalar API yanıtlarında dönmez, loglanmaz ve SQLite'a yazılmaz (keyring).
 - SFTP sunucu anahtarı ilk bağlantıda kullanıcıya gösterilir; onaylanmadan `known_hosts`'a yazılmaz. Değişen anahtarda bağlantı durdurulur.
+- FTPS sertifikası önce sistemin güvendiği sertifika otoriteleriyle doğrulanır. Doğrulanamazsa (kendinden imzalı sertifika) parola gönderilmeden SHA-256 parmak izi kullanıcıya gösterilir; onaylanırsa `ftps_certs.json`'a sabitlenir. Sabitlenmiş sertifika değişirse bağlantı `host_key_changed` ile durdurulur.
 
 ## 4. Frontend
 
@@ -144,9 +149,33 @@ SQLite şeması `PRAGMA user_version` ile sürümlenir (şu an 3). Sürüm 1'dek
 ## 5. Masaüstü (Electron)
 
 - `contextIsolation`, `sandbox` açık, `nodeIntegration` kapalı.
-- `preload.cjs` yalnızca şunları açar: `platform`, `openExternal` (yalnızca https), `setTheme`, `backend()` (API adresi ve anahtarı), `launchRdp`, `notify` ve `pathForFile` (sürüklenen dosyanın yolu).
+- `preload.cjs` yalnızca şunları açar: `platform`, `openExternal` (yalnızca https), `setTheme`, `backend()` (API adresi ve anahtarı), `launchRdp`, `notify`, `pathForFile` (sürüklenen dosyanın yolu), güncelleme (`checkForUpdate`, `downloadUpdate`, `applyUpdate`, `onUpdateProgress`), `setActiveTransfers` ve `setTaskbarProgress`.
 - Pencere `show: false` ile açılır ve `ready-to-show` olayında gösterilir. Zemin rengi `bg-app` ile aynıdır, böylece beyaz flaş olmaz.
 - `backend.cjs` boş bir port seçer ve `cybergoose-backend.exe`'yi başlatır. `/api/health` yanıt verene kadar (en fazla 30 sn) bekler. Uygulama kapanırken süreci (Windows'ta `taskkill /T`) sonlandırır.
+
+### Klasör karşılaştırma ve saat dilimi
+
+`POST /api/compare` dosyaları boyuta göre "aynı/farklı" sayar; tarih yalnızca hangi tarafın daha yeni olduğunu söyler. FTP `LIST` tarihleri sunucunun yerel saatidir (ve yalnız dakika/gün hassasiyetindedir), Dropbox UTC verir. Dropbox tarihleri yerel saate çevrilir; `LIST` girdileri `mtimePrecision` taşır ve tolerans buna göre büyür. Sunucu saat farkı `timeOffsetMinutes` ile verilebilir; verilmezse aynı boyuttaki dosyaların çoğunluğu aynı çeyrek saatlik farkla kaymışsa bu fark otomatik uygulanır (`timeOffsetDetected`). Arayüzde "Sunucu saat farkı" seçimi vardır; kayıtlı bağlantılarda seçim `PUT /api/connections/<id>/compare-offset` ile saklanır ve sonraki karşılaştırmada hazır gelir. `leftSessionId` verilirse sol taraf da uzak bir klasördür.
+
+"Hedefte fazla olan seçili dosyaları sil" açılırsa eşitleme, hedefte olup kaynakta olmayan seçili dosyaları da siler. Silmeden önce liste ve sonuç (yerelde Geri Dönüşüm Kutusu, sunucuda kalıcı) gösterilip onay istenir. Boş kalan klasörler silinmez.
+
+### Büyük klasörler
+
+`FileTable` 300 satırın üzerinde yalnızca görünen satırları (±20 tampon) çizer; üst ve alt boşluk satırları kaydırma yüksekliğini korur. Seçim, Ctrl+A ve Shift aralığı tüm listeye uygulanır; ok tuşlarıyla pencere dışına inildiğinde satır kaydırılıp çizildikten sonra odaklanır.
+
+### Görev çubuğu
+
+Kuyruk çalışırken renderer grup ilerlemesini (bayt oranı; boyutu bilinmeyen dosya varsa dosya başına ortalama) `setTaskbarProgress` ile gönderir, main `BrowserWindow.setProgressBar` çağırır. Hata alan dosya varsa çubuk kırmızıdır; kuyruk boşalınca kaldırılır.
+
+### Güncelleme
+
+`desktop/updater.cjs` GitHub Releases'tan son sürümü alır. Paket adresi renderer'a verilmez, main süreçte tutulur.
+
+İndirmeden sonra çalışan exe ile indirilen exe'nin Authenticode imzası (`Get-AuthenticodeSignature`) okunur. Çalışan exe geçerli imzalıysa güncelleme de geçerli imzalı ve aynı yayıncıdan (sertifika konusundaki CN) olmalıdır; değilse dosya silinir ve güncelleme uygulanmaz. İmzasız derlemeden güncellemede imza zorunlu tutulamaz, yalnızca bozuk imza (`HashMismatch`) reddedilir. İmzalama adımları için `docs/SIGNING.md`.
+
+- Taşınabilir exe: yeni exe aynı klasöre `<exe>.update` olarak indirilir; GitHub'ın verdiği SHA-256 özeti (yoksa boyut) doğrulanır. "Yeniden başlat ve güncelle" gizli bir PowerShell betiği (`-EncodedCommand`, Türkçe yollar güvenli) başlatır ve uygulamayı kapatır; betik exe kilidi kalkınca eskisinin yerine yenisini koyar ve başlatır. Değiştiremezse yeni exe'yi olduğu yerden açar.
+- Kurulumlu sürüm: kurulum dosyası geçici klasöre indirilip çalıştırılır.
+- Exe'nin klasörüne yazılamıyorsa (ör. Program Files) ya da geliştirme modunda indirme sayfası tarayıcıda açılır.
 
 ## 6. Tek exe paketleme
 
@@ -186,9 +215,8 @@ Kaynak, CyberGoose Design System'dir (Claude Artifact). Token'lar `frontend/src/
 
 ## 9. Roadmap
 
-1. Git geçmişindeki `credentials.json`, `token.json`, `dropboxtoken.json` ve `data.db` dosyalarını geçmişten temizlemek ve sağlayıcı anahtarlarını yenilemek.
-2. Bulut sağlayıcılarında (Dropbox, Drive, OneDrive) aktarım sürdürme.
+1. Git geçmişindeki `credentials.json`, `token.json`, `dropboxtoken.json` ve `access_token.json` dosyalarını geçmişten temizlemek (anahtarlar yenilendikten sonra, sahibinin onayıyla).
+2. Bulut indirmelerinde sürdürme (yüklemeler sürdürülüyor).
 3. Aynı anda birden fazla etkin uzak bağlantı (sekmeli uzak panel).
-4. Klasör karşılaştırma ve eşitleme.
-5. macOS/Linux paketleri ve tepsi ikonu.
-6. Windows'ta electron-builder çıktısının (portable exe) imzalanması.
+4. macOS/Linux paketleri ve tepsi ikonu.
+5. Kod imzalama sertifikası alınıp sürümlerin imzalı yayınlanması (altyapı hazır, bkz. `docs/SIGNING.md`).

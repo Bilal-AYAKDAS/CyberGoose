@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import type { FileEntry, PaneId } from '../types'
 import { formatDate, formatFileSize } from '../utils/formatters'
 import { Icon } from './Icon'
@@ -29,6 +29,13 @@ const columns: { key: SortKey; label: string; numeric?: boolean; className?: str
   { key: 'modified', label: 'Değiştirilme', className: 'col-date' },
 ]
 
+/** Bu sayının üstünde yalnızca görünen satırlar (+ tampon) çizilir. */
+export const VIRTUAL_THRESHOLD = 300
+const ROW_HEIGHT = 28
+const OVERSCAN = 20
+/** jsdom gibi yerleşim yapmayan ortamlarda kullanılan varsayılan görünür yükseklik. */
+const FALLBACK_VIEWPORT = 600
+
 function compare(a: FileEntry, b: FileEntry, key: SortKey): number {
   if (key === 'size') return (a.size ?? -1) - (b.size ?? -1)
   if (key === 'modified') return (a.modified ?? '').localeCompare(b.modified ?? '')
@@ -43,6 +50,10 @@ function compare(a: FileEntry, b: FileEntry, key: SortKey): number {
 export function FileTable({ pane, label, entries, selected, onSelect, onOpen, onOpenParent, onContextMenu, emptyText = 'Bu klasör boş', onTabOut }: FileTableProps) {
   const [sort, setSort] = useState<SortState>({ key: 'name', direction: 'asc' })
   const anchorRef = useRef<string | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const pendingFocusRef = useRef<number | null>(null)
+  const [viewport, setViewport] = useState({ top: 0, height: FALLBACK_VIEWPORT })
+  const selectedSet = useMemo(() => new Set(selected), [selected])
 
   const sorted = useMemo(() => {
     const factor = sort.direction === 'asc' ? 1 : -1
@@ -51,6 +62,54 @@ export function FileTable({ pane, label, entries, selected, onSelect, onOpen, on
       return compare(a, b, sort.key) * factor
     })
   }, [entries, sort])
+
+  const virtual = sorted.length > VIRTUAL_THRESHOLD
+  const parentRows = onOpenParent ? 1 : 0
+  let start = 0
+  let end = sorted.length
+  if (virtual) {
+    const firstVisible = Math.floor(viewport.top / ROW_HEIGHT) - parentRows
+    start = Math.max(0, firstVisible - OVERSCAN)
+    end = Math.min(sorted.length, firstVisible + Math.ceil(viewport.height / ROW_HEIGHT) + OVERSCAN)
+  }
+
+  useLayoutEffect(() => {
+    const node = scrollRef.current
+    if (!node || !virtual) return
+    const measure = () => setViewport({ top: node.scrollTop, height: node.clientHeight || FALLBACK_VIEWPORT })
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [virtual])
+
+  // Klavyeyle gezinmede hedef satır o an çizilmemiş olabilir: kaydırıp çizildikten sonra odakla.
+  useEffect(() => {
+    const index = pendingFocusRef.current
+    if (index === null) return
+    const row = scrollRef.current?.querySelector<HTMLElement>(`tr[data-index="${index}"]`)
+    if (!row) return
+    pendingFocusRef.current = null
+    row.focus({ preventScroll: !virtual })
+  })
+
+  const focusRow = (index: number) => {
+    pendingFocusRef.current = index
+    const node = scrollRef.current
+    if (!virtual || !node) {
+      node?.querySelector<HTMLElement>(`tr[data-index="${index}"]`)?.focus()
+      pendingFocusRef.current = null
+      return
+    }
+    const height = node.clientHeight || FALLBACK_VIEWPORT
+    const rowTop = (index + parentRows) * ROW_HEIGHT
+    let top = node.scrollTop
+    if (rowTop < top + ROW_HEIGHT) top = Math.max(0, rowTop - ROW_HEIGHT)
+    else if (rowTop + ROW_HEIGHT > top + height) top = rowTop + 2 * ROW_HEIGHT - height
+    if (top !== node.scrollTop) node.scrollTop = top
+    setViewport({ top, height })
+  }
 
   const toggleSort = (key: SortKey) => {
     setSort((current) => current.key === key
@@ -101,12 +160,12 @@ export function FileTable({ pane, label, entries, selected, onSelect, onOpen, on
     }
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
     event.preventDefault()
-    const next = sorted[index + (event.key === 'ArrowDown' ? 1 : -1)]
+    const nextIndex = index + (event.key === 'ArrowDown' ? 1 : -1)
+    const next = sorted[nextIndex]
     if (!next) return
     anchorRef.current = next.name
     onSelect([next.name], next)
-    const rows = event.currentTarget.parentElement?.querySelectorAll<HTMLElement>('tr[data-entry]')
-    rows?.[index + (event.key === 'ArrowDown' ? 1 : -1)]?.focus()
+    focusRow(nextIndex)
   }
 
   if (!entries.length && !onOpenParent) {
@@ -118,8 +177,10 @@ export function FileTable({ pane, label, entries, selected, onSelect, onOpen, on
   }
 
   const primarySelected = selected.at(-1) ?? null
-  const focusIndex = Math.max(0, sorted.findIndex((entry) => entry.name === primarySelected))
-  const allSelected = sorted.length > 0 && sorted.every((entry) => selected.includes(entry.name))
+  const selectedIndex = sorted.findIndex((entry) => entry.name === primarySelected)
+  // Odak satırı pencerenin dışındaysa Tab ile listeye girilebilsin diye ilk çizilen satır odaklanabilir olur.
+  const focusIndex = selectedIndex >= start && selectedIndex < end ? selectedIndex : start
+  const allSelected = sorted.length > 0 && sorted.every((entry) => selectedSet.has(entry.name))
 
   const toggleItem = (entry: FileEntry) => {
     anchorRef.current = entry.name
@@ -130,7 +191,14 @@ export function FileTable({ pane, label, entries, selected, onSelect, onOpen, on
   }
 
   return (
-    <div className="cg-list-scroll">
+    <div
+      className="cg-list-scroll"
+      ref={scrollRef}
+      onScroll={virtual ? (event) => {
+        const node = event.currentTarget
+        setViewport({ top: node.scrollTop, height: node.clientHeight || FALLBACK_VIEWPORT })
+      } : undefined}
+    >
       <table className="cg-list" aria-label={label}>
         <colgroup><col style={{ width: 28 }} /><col /><col className="col-size" style={{ width: 92 }} /><col className="col-date" style={{ width: 140 }} /></colgroup>
         <thead>
@@ -171,11 +239,14 @@ export function FileTable({ pane, label, entries, selected, onSelect, onOpen, on
               <td className="meta col-date" />
             </tr>
           )}
-          {sorted.map((entry, index) => {
-            const isSelected = selected.includes(entry.name)
+          {start > 0 && <tr className="cg-spacer" aria-hidden="true" style={{ height: start * ROW_HEIGHT }}><td colSpan={4} /></tr>}
+          {sorted.slice(start, end).map((entry, offset) => {
+            const index = start + offset
+            const isSelected = selectedSet.has(entry.name)
             return (
               <tr
                 key={entry.path}
+                data-index={index}
                 className={isSelected ? 'is-selected' : undefined}
                 aria-selected={isSelected}
                 data-entry
@@ -218,6 +289,7 @@ export function FileTable({ pane, label, entries, selected, onSelect, onOpen, on
               </tr>
             )
           })}
+          {end < sorted.length && <tr className="cg-spacer" aria-hidden="true" style={{ height: (sorted.length - end) * ROW_HEIGHT }}><td colSpan={4} /></tr>}
         </tbody>
       </table>
       {!entries.length && <div className="cg-empty cg-empty-inline"><span className="cg-caption">{emptyText}</span></div>}

@@ -5,6 +5,8 @@ import { Notice } from './Notice'
 
 type SheetEditorModalProps = {
   side: 'local' | 'remote'
+  /** Sol paneldeki ikinci uzak bağlantı; yoksa etkin oturum. */
+  sessionId?: number
   path: string
   name: string
   onSaved: () => void
@@ -24,7 +26,7 @@ function columnLabel(index: number): string {
 /**
  * Yerel ve uzak Excel (.xlsx) / CSV (.csv) dosyaları için tablo düzenleyici (5 MB'a kadar).
  */
-export function SheetEditorModal({ side, path, name, onSaved, onClose }: SheetEditorModalProps) {
+export function SheetEditorModal({ side, sessionId, path, name, onSaved, onClose }: SheetEditorModalProps) {
   const [data, setData] = useState<SheetData | null>(null)
   const [sheets, setSheets] = useState<SheetTab[]>([])
   const [activeSheet, setActiveSheet] = useState(0)
@@ -36,7 +38,8 @@ export function SheetEditorModal({ side, path, name, onSaved, onClose }: SheetEd
 
   useEffect(() => {
     let active = true
-    api.readSheet(side, path)
+    const read = sessionId !== undefined ? api.readSheet(side, path, sessionId) : api.readSheet(side, path)
+    read
       .then((res) => {
         if (!active) return
         setData(res)
@@ -51,7 +54,7 @@ export function SheetEditorModal({ side, path, name, onSaved, onClose }: SheetEd
         setLoading(false)
       })
     return () => { active = false }
-  }, [path, side])
+  }, [path, side, sessionId])
 
   const currentSheet = sheets[activeSheet]
   const colCount = useMemo(() => {
@@ -104,6 +107,7 @@ export function SheetEditorModal({ side, path, name, onSaved, onClose }: SheetEd
         delimiter: data.delimiter,
         encoding: data.encoding,
         newline: data.newline,
+        ...(sessionId !== undefined ? { sessionId } : {}),
       })
       onSaved()
       onClose()
